@@ -1,0 +1,4 @@
+# overall = ((ADE20K + COCO)/2 + Omni3D)/2
+name: cvbench
+spec: cvbench
+dataset: {name: lmdb_vqa, path: "${data_root}/cvbench", split: test}

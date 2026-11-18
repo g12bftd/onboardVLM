@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+outputs/
+multirun/
+data/
+lightning_logs/
+*.ckpt
+.env

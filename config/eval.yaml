@@ -1,0 +1,37 @@
+# python run_eval.py benchmark=<name> [student_dir=<export>] [run_name=<label>]
+data_root: ${oc.env:ONBOARD_VLM_DATA,./data/lmdb}
+output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
+
+vlm_id: google/gemma-4-E2B-it     # deployment VLM
+student_dir: null                  # null = teacher baseline (original Gemma vision tower)
+run_name: teacher                  # output label; set e.g. run_name=cvit_s when evaluating a student
+dtype: bfloat16
+device: cuda
+batch_size: 8
+num_workers: 4
+image_token_budget: 280            # soft tokens per image
+video_token_budget: 70             # soft tokens per frame (Gemma 4 video default)
+max_new_tokens: null               # null = benchmark default
+answerability_scoring: true        # VizWiz: 1 - p("Unanswerable" | prompt)
+
+use_judge: true                    # LLM judge for EgoBlind / EgoTextVQA / WearVQA (official protocols)
+judge:
+  backend: openai                  # any OpenAI-compatible chat-completions endpoint
+  model: gpt-4o-mini               # the judge used by the official EgoBlind / EgoTextVQA scripts
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+
+tiny: false                        # random tiny VLM + offline processor (dry runs)
+tiny_student: null
+
+output_dir: ${output_root}/eval/${run_name}/${benchmark.name}
+
+defaults:
+  - _self_
+  - benchmark: vizwiz_vqa
+
+hydra:
+  run:
+    dir: ${output_root}/hydra/eval/${run_name}/${benchmark.name}
+  sweep:
+    dir: ${output_root}/hydra/eval_multirun/${run_name}

@@ -1,0 +1,3 @@
+name: egotextvqa_indoor
+spec: egotextvqa
+dataset: {name: lmdb_vqa, path: "${data_root}/egotextvqa_indoor", split: test}

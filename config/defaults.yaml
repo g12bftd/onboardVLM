@@ -1,0 +1,53 @@
+# Default Stage-1 distillation run. Override order (as in TimeFM/cerebro_v2):
+#   CLI  >  experiment config (+experiment=...)  >  module configs  >  this file
+tag: onboard_vlm
+experiment_name: debug
+seed: 42
+num_nodes: 1
+num_workers: 8
+batch_size: 32
+
+# Paths (override with env vars or on the CLI).
+data_root: ${oc.env:ONBOARD_VLM_DATA,./data/lmdb}
+output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
+
+# Vision width of the *deployment* VLM the student will be grafted into (768 for E2B / E4B).
+deploy_vision_dim: 768
+# Gemma 4 soft-token budgets sampled per batch during training.
+token_budgets: [280]
+# Intermediate-layer distillation: {student_layer: teacher_layer} (empty = final tokens only).
+layer_map: {}
+
+resume_ckpt: null
+# Offline teacher-feature cache (run_cache_teacher.py); used by data_module=stage1_cached.
+cache_root: null
+export_dir: ${output_root}/students/${experiment_name}
+
+callbacks:
+  lr_monitor:
+    _target_: pytorch_lightning.callbacks.LearningRateMonitor
+    logging_interval: step
+  progress_bar:
+    _target_: pytorch_lightning.callbacks.TQDMProgressBar
+    refresh_rate: 20
+  model_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: ${output_root}/checkpoints/${experiment_name}
+    filename: "${experiment_name}-{epoch:02d}-{val_loss:.4f}"
+    monitor: val_loss
+    mode: min
+    save_top_k: 3
+    save_last: true
+
+io:
+  base_output_path: ${output_root}/logs
+  version: ${experiment_name}
+
+defaults:
+  - _self_
+  - teacher: gemma4_e2b
+  - student: compact_vit_s
+  - criterion: stage1_tokens
+  - data_module: stage1_mix
+  - task: stage1
+  - trainer: gpu_ddp

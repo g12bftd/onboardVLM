@@ -1,0 +1,4 @@
+# official metric: LLM-judge accuracy; sliced by quality issue / domain / task type
+name: wearvqa
+spec: wearvqa
+dataset: {name: lmdb_vqa, path: "${data_root}/wearvqa", split: test}

@@ -1,0 +1,11 @@
+# @package _global_
+# Cross-width distillation: 31B teacher (vision width read from its config) -> 768-d student that
+# grafts into E2B. The DistillationAdapter adds 768 -> D_31B projection heads (training only).
+experiment_name: stage1_compact_vit_s_31b_to_e2b
+deploy_vision_dim: 768
+token_budgets: [140, 280, 560]
+layer_map: {}
+defaults:
+  - override /teacher: gemma4_31b
+  - override /student: compact_vit_s
+  - override /criterion: stage1_tokens_relational

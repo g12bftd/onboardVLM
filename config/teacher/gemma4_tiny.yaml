@@ -1,0 +1,5 @@
+# Random tiny Gemma 4 (no download) for offline dry runs. Pair with deploy_vision_dim=48.
+name: gemma4
+tiny: {vision_hidden: 48, vision_layers: 3}
+load: vision
+dtype: float32

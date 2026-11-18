@@ -1,0 +1,11 @@
+name: multiplexed_vit
+out_dim: ${deploy_vision_dim}
+embed_dim: 384
+num_heads: 6
+mlp_ratio: 4.0
+num_shared_blocks: 4
+steps_per_block: 3
+step_transform: [lowrank, diag, dwconv]
+lowrank_rank: 32
+drop_path: 0.1
+input_norm: gemma

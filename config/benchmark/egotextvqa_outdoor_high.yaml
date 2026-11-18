@@ -1,0 +1,4 @@
+# frames stored at 1920x1080; the high/low gap needs video_token_budget >= 280 (grows at 560/1120)
+name: egotextvqa_outdoor_high
+spec: egotextvqa
+dataset: {name: lmdb_vqa, path: "${data_root}/egotextvqa_outdoor_high", split: test}

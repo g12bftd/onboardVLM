@@ -1,0 +1,6 @@
+name: compact_vit
+out_dim: ${deploy_vision_dim}
+embed_dim: 32
+depth: 4
+num_heads: 2
+input_norm: gemma

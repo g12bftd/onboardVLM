@@ -1,0 +1,8 @@
+name: timm_spatial
+model_name: mobilenetv4_hybrid_medium.e500_r224_in1k
+out_dim: ${deploy_vision_dim}
+pretrained: true
+alignment: stem_stride3
+head: linear
+input_norm: imagenet
+model_kwargs: {drop_path_rate: 0.1}

@@ -1,0 +1,4 @@
+# frames stored at 960x540
+name: egotextvqa_outdoor_low
+spec: egotextvqa
+dataset: {name: lmdb_vqa, path: "${data_root}/egotextvqa_outdoor_low", split: test}

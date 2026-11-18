@@ -1,0 +1,19 @@
+data_root: ${oc.env:ONBOARD_VLM_DATA,./data/lmdb}
+output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
+dataset: {name: lmdb_vqa, path: "${data_root}/vizwiz", split: train, mode: image}
+cache_root: ${output_root}/teacher_cache/vizwiz_train
+token_budgets: [280]
+views_per_image: 1        # >1 caches several augmented views (with train_augment=true)
+train_augment: false
+hflip_prob: 0.0
+layers: [3, 9, 15]        # teacher layers to store (pooled to the 48-px token grid)
+cache_dtype: bfloat16
+batch_size: 16
+num_workers: 8
+device: cuda
+shard_size: 2048
+shard_id: 0
+num_shards: 1
+defaults:
+  - _self_
+  - teacher: gemma4_e2b

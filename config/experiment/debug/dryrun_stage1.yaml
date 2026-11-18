@@ -1,0 +1,15 @@
+# @package _global_
+# Fully offline sanity check: python run_distill.py +experiment=debug/dryrun_stage1
+experiment_name: dryrun_stage1
+deploy_vision_dim: 48
+token_budgets: [70, 140]
+batch_size: 4
+layer_map: {1: 0, 3: 2}
+defaults:
+  - override /teacher: gemma4_tiny
+  - override /student: debug_tiny
+  - override /criterion: stage1_full
+  - override /data_module: synthetic
+  - override /trainer: cpu_debug
+callbacks:
+  progress_bar: {refresh_rate: 1}

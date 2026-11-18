@@ -1,0 +1,4 @@
+# test answers are hidden: set dataset.split=test and upload vizwiz_*_submission.json to EvalAI
+name: vizwiz_vqa
+spec: vizwiz_vqa
+dataset: {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val}

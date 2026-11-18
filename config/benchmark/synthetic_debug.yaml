@@ -1,0 +1,4 @@
+# offline dry run
+name: synthetic_debug
+spec: vizwiz_vqa
+dataset: {name: synthetic, num_samples: 4, max_side: 320}

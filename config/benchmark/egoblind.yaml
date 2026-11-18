@@ -1,0 +1,4 @@
+# test = test_half_release.csv (publicly released half)
+name: egoblind
+spec: egoblind
+dataset: {name: lmdb_vqa, path: "${data_root}/egoblind", split: test}

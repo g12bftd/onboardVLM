@@ -1,0 +1,12 @@
+# Offline dry run: random images, no downloads.
+_target_: onboard_vlm.data.data_module.DistillDataModule
+train:
+  - {name: synthetic, num_samples: 64, min_side: 96, max_side: 640}
+val:
+  - {name: synthetic, num_samples: 16, seed: 1}
+collator: {token_budgets: "${token_budgets}", train: true, hflip_prob: 0.5}
+val_collator: {token_budgets: [70], train: false}
+batch_size: ${batch_size}
+num_workers: 0
+pin_memory: false
+seed: ${seed}

@@ -1,0 +1,14 @@
+# @package _global_
+# python -u run_distill.py +experiment=stage2/compact_vit_s_e2b
+experiment_name: stage2_compact_vit_s_e2b
+stage1_experiment: stage1_compact_vit_s_e2b   # student export to graft
+batch_size: 8
+defaults:
+  - override /teacher: gemma4_e2b
+  - override /criterion: stage2_logit_kd
+  - override /data_module: stage2_vqa
+  - override /task: stage2
+task:
+  train_embed_vision: lora
+trainer:
+  max_epochs: 3

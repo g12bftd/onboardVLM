@@ -1,0 +1,21 @@
+output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
+deploy_vision_dim: 768
+include_teacher: true
+teacher_vision_config: null       # null = Gemma4VisionConfig() defaults (E2B/E4B: 768-d x 16 layers)
+students:
+  - compact_vit_ti
+  - compact_vit_s
+  - coarse_patch_vit_s
+  - multiplexed_vit_s
+  - multiplexed_vit_s_lowrank
+  - timm_mobilenetv4_conv_m
+  - timm_mobilenetv4_hybrid_m
+  - timm_fastvit_sa12
+  - timm_efficientvit_b1
+  - timm_tinyvit_11m
+token_budgets: [140, 280, 560]
+source_hw: [1080, 1440]           # camera frame (H, W) before Gemma's budget resize
+device: cpu
+dtype: float32
+latency_iters: 0
+output: ${output_root}/profile/profile.json

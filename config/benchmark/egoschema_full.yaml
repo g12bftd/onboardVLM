@@ -1,0 +1,4 @@
+# 5,031 questions: accuracy only via egoschema_kaggle.csv (Kaggle egoschema-public)
+name: egoschema_full
+spec: egoschema
+dataset: {name: lmdb_vqa, path: "${data_root}/egoschema", split: test}

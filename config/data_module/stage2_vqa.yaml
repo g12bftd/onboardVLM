@@ -1,0 +1,12 @@
+# Stage-2: teacher-forced (prompt + reference answer) sequences from TRAIN splits.
+_target_: onboard_vlm.data.data_module.DistillDataModule
+train:
+  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: train, mode: vqa}
+  - {name: lmdb_vqa, path: "${data_root}/textvqa", split: train, mode: vqa}
+val:
+  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: vqa, limit: 500}
+collator: {token_budgets: [280], train: false, build_student_view: false}
+text: {processor_id: "${teacher.model_id}", prompt: auto, with_answer: true}
+batch_size: ${batch_size}
+num_workers: ${num_workers}
+seed: ${seed}

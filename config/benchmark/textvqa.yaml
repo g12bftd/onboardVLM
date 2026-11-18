@@ -1,0 +1,4 @@
+# test answers are hidden: set dataset.split=test and upload textvqa_submission.json to EvalAI
+name: textvqa
+spec: textvqa
+dataset: {name: lmdb_vqa, path: "${data_root}/textvqa", split: val}

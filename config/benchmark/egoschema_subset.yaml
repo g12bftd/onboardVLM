@@ -1,0 +1,4 @@
+# 500 questions with public answers (local accuracy)
+name: egoschema_subset
+spec: egoschema
+dataset: {name: lmdb_vqa, path: "${data_root}/egoschema", split: subset}

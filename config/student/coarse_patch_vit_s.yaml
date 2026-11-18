@@ -1,0 +1,10 @@
+name: coarse_patch_vit
+out_dim: ${deploy_vision_dim}
+embed_dim: 384
+depth: 12
+num_heads: 6
+mlp_ratio: 4.0
+drop_path: 0.1
+stem: linear
+head: linear
+input_norm: gemma
