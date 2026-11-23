@@ -1,0 +1,7 @@
+# Same as gemma4_vit_l8_d384 but randomly initialised (init ablation).
+defaults:
+  - gemma4_vit@_here_
+  - _self_
+hidden_size: 384
+num_hidden_layers: 8
+init: random

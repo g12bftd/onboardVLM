@@ -1,0 +1,7 @@
+# MobileCLIP image tower MCi1, 21M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: fastvit_mci1.apple_mclip
+alignment: stem_stride3
+model_kwargs: {}

@@ -39,8 +39,11 @@ Each `make_*.py` accepts `--dry_run` (parse and count only) and `--limit N` (deb
 
 **Contamination rule.** The default configs distil only on **train** splits (VizWiz, TextVQA,
 EgoBlind). Label-free Stage 1 on evaluation images would still be transductive, so keep
-WearVQA, EgoTextVQA, EgoSchema, CV-Bench and all val/test splits out of training. For more
-Stage-1 data, add generic image corpora with `{name: image_folder, root: ...}`.
+WearVQA, EgoTextVQA, EgoSchema, CV-Bench and all val/test splits out of training.
+
+These train splits (about 45K images) are far too small and narrow to preserve the encoder's
+general capabilities. [corpus.md](corpus.md) covers the recommended Stage-1 corpus, its builders
+and the benchmark decontamination blocklist.
 
 ## Source verification
 

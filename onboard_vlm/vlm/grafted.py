@@ -43,6 +43,9 @@ class StudentVisionTower(nn.Module):
 
     def forward(self, pixel_values: torch.Tensor, pixel_position_ids: torch.Tensor, **_: Any) -> BaseModelOutputWithPooling:
         """pixel_values ``[B, P, 768]`` in [0, 1]; pixel_position_ids ``[B, P, 2]`` -> ``last_hidden_state [N, D]``."""
+        if getattr(self.student, "accepts_teacher_patches", False):  # Gemma-architecture students take the patches as-is
+            out = self.student(pixel_values=pixel_values.to(self.dtype), pixel_position_ids=pixel_position_ids)
+            return BaseModelOutputWithPooling(last_hidden_state=out.tokens)
         dense, mask, sizes = unpatchify_batch(pixel_values, pixel_position_ids, PATCH_SIZE)
         dense = dense.to(self.dtype)
         step = 1 if self.per_image else self.chunk_size
@@ -130,8 +133,15 @@ class GraftedVLM(nn.Module):
 
         from onboard_vlm.students.io import load_student
 
+        from onboard_vlm.teachers import hub
+
         torch_dtype = dtype if isinstance(dtype, torch.dtype) else getattr(torch, dtype)
-        vlm = Gemma4ForConditionalGeneration.from_pretrained(vlm_id, dtype=torch_dtype, attn_implementation=attn_implementation, **kw)
+        spec = hub.resolve_teacher(vlm_id, kw.pop("revision", None))  # pinned E2B/E4B commit only
+        vlm = Gemma4ForConditionalGeneration.from_pretrained(
+            spec.model_id, revision=spec.revision, dtype=torch_dtype, attn_implementation=attn_implementation, **kw
+        )
+        if torch_dtype == torch.bfloat16:  # checkpoint dtype: the loaded tower must match the manifest
+            hub.verify_module_weights(vlm.model.vision_tower, vlm.model.embed_vision.embedding_projection.weight, spec.model_id)
         student = None
         if student_dir is not None:
             student, _ = load_student(student_dir)

@@ -43,6 +43,7 @@ def tiny_gemma4_config(vision_hidden: int = 48, vision_layers: int = 3, text_hid
             num_attention_heads=2,
             num_key_value_heads=2,
             head_dim=vision_hidden // 2,
+            use_clipped_linears=True,  # as in the real E2B/E4B vision config
         ),
         audio_config=None,
         **TINY_SPECIAL_TOKENS,

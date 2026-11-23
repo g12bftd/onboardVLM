@@ -1,5 +1,10 @@
-# Frozen Gemma 4 teacher. load: vision (Stage-1, only vision-tower shards are downloaded) | vlm.
+# Gemma 4 E2B instruction-tuned (default deployment VLM). Exact official weights, verified against
+# onboard_vlm/teachers/manifests/gemma4_vision.json on every load.
+# NOTE: the vision tower is byte-identical in E2B / E4B / base / -it; the choice of teacher only
+# selects embed_vision (LM-space losses, 1536-d for E2B, 2560-d for E4B) and the VLM used in Stage 2.
 name: gemma4
 model_id: google/gemma-4-E2B-it
-load: vision
-dtype: bfloat16
+revision: 4adf15748de9e1a0097b6274cee9c15836c41c37
+load: vision              # vision: 658 vision tensors + embed_vision only (~320 MB) | vlm: full model
+compute_dtype: bfloat16   # bfloat16 = bitwise-identical to the deployed VLM | float32 = lossless upcast
+verify: true              # re-hash every tensor against the manifest

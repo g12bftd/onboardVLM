@@ -1,0 +1,10 @@
+# Gemma 4 E4B pretrained (base). Exact official weights, verified against
+# onboard_vlm/teachers/manifests/gemma4_vision.json on every load.
+# NOTE: the vision tower is byte-identical in E2B / E4B / base / -it; the choice of teacher only
+# selects embed_vision (LM-space losses, 1536-d for E2B, 2560-d for E4B) and the VLM used in Stage 2.
+name: gemma4
+model_id: google/gemma-4-E4B
+revision: 11b8250ef59eb3ebc5dae7b21144d7b84f2c06dd
+load: vision              # vision: 658 vision tensors + embed_vision only (~320 MB) | vlm: full model
+compute_dtype: bfloat16   # bfloat16 = bitwise-identical to the deployed VLM | float32 = lossless upcast
+verify: true              # re-hash every tensor against the manifest

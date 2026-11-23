@@ -1,0 +1,6 @@
+# 8 layers x 384 (6 heads), ~20M. Default student.
+defaults:
+  - gemma4_vit@_here_
+  - _self_
+hidden_size: 384
+num_hidden_layers: 8

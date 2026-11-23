@@ -21,10 +21,15 @@ CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 
 
 def student_cfg(name: str, deploy_dim: int) -> dict:
-    node = OmegaConf.merge({"deploy_vision_dim": deploy_dim}, {"student": OmegaConf.load(os.path.join(CONFIG_DIR, "student", f"{name}.yaml"))})
-    cfg = OmegaConf.to_container(node, resolve=True)["student"]
+    """Resolve config/student/<name>.yaml through Hydra (presets inherit from family base configs)."""
+    from hydra import compose
+
+    node = compose(config_name="defaults", overrides=[f"student={name}", f"deploy_vision_dim={deploy_dim}"])
+    cfg = OmegaConf.to_container(node.student, resolve=True)
     if cfg.get("name") == "timm_spatial":
         cfg["pretrained"] = False  # architecture only
+    if cfg.get("name") == "gemma4_vit":
+        cfg["init"] = "random"  # architecture only (no teacher download needed)
     return cfg
 
 

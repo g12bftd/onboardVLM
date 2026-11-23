@@ -1,0 +1,10 @@
+# Generic timm CNN / hybrid student with an exact 48-px output stride (see students/timm_spatial.py).
+# Presets in this group only override model_name / alignment / model_kwargs.
+name: timm_spatial
+model_name: mobilenetv4_conv_medium.e500_r256_in1k
+out_dim: ${deploy_vision_dim}
+pretrained: true
+alignment: stem_stride3     # stem_stride3 (first stride-2 layer -> stride 3) | tap16_conv3 (stride-16 tap + learned 3x3/s3 conv)
+head: linear                # linear (1x1 conv) | mlp
+input_norm: imagenet        # the checkpoint's own mean/std from timm's pretrained_cfg
+model_kwargs: {}

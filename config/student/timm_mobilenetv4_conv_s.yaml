@@ -1,0 +1,7 @@
+# MobileNetV4-Conv-S (2024), 2.0M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: mobilenetv4_conv_small.e2400_r224_in1k
+alignment: stem_stride3
+model_kwargs: {}

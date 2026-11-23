@@ -1,0 +1,7 @@
+# EdgeNeXt-S (patchify stem: stride-16 tap)
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: edgenext_small.usi_in1k
+alignment: tap16_conv3
+model_kwargs: {}

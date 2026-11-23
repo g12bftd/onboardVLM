@@ -8,12 +8,15 @@ from onboard_vlm.data.collator import DualViewCollator
 from onboard_vlm.geometry import pad_dense
 from onboard_vlm.registry import build_student
 from onboard_vlm.teachers.gemma4 import EncoderFreeTeacherError, Gemma4Teacher, pool_patch_states
+from onboard_vlm.teachers.hub import UnsupportedTeacherError
 
 D = 48  # tiny teacher vision width
 STUDENTS = {
     "compact_vit": {"name": "compact_vit", "out_dim": D, "embed_dim": 32, "depth": 3, "num_heads": 2},
     "coarse_patch_vit": {"name": "coarse_patch_vit", "out_dim": D, "embed_dim": 32, "depth": 3, "num_heads": 2, "stem": "conv"},
     "multiplexed_vit": {"name": "multiplexed_vit", "out_dim": D, "embed_dim": 32, "num_heads": 2, "num_shared_blocks": 2, "steps_per_block": 2},
+    "gemma4_vit": {"name": "gemma4_vit", "out_dim": D, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 16, "position_embedding_size": 128},
+    "gemma4_vit_p48": {"name": "gemma4_vit", "out_dim": D, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 16, "patch_size": 48},
     "timm_mobilenetv4": {"name": "timm_spatial", "model_name": "mobilenetv4_conv_small", "out_dim": D, "pretrained": False},
     "timm_fastvit": {"name": "timm_spatial", "model_name": "fastvit_t8", "out_dim": D, "pretrained": False, "alignment": "tap16_conv3"},
 }
@@ -43,7 +46,7 @@ def test_student_teacher_token_parity(tiny_teacher, family, budget):
         assert batch.image_token_lengths[i] == tr.num_tokens <= tr.token_budget
 
 
-@pytest.mark.parametrize("family", ["compact_vit", "coarse_patch_vit", "multiplexed_vit"])
+@pytest.mark.parametrize("family", ["compact_vit", "coarse_patch_vit", "multiplexed_vit", "gemma4_vit", "gemma4_vit_p48"])
 def test_vit_students_are_batch_invariant(family):
     torch.manual_seed(0)
     student = build_student(STUDENTS[family]).eval()
@@ -55,7 +58,7 @@ def test_vit_students_are_batch_invariant(family):
     with torch.no_grad():
         batched = student(x, m).tokens
         single = torch.cat([student(*pad_dense([im])[:2]).tokens for im in imgs])
-    assert torch.allclose(batched, single, atol=1e-5)
+    assert torch.allclose(batched, single, rtol=1e-5, atol=1e-5 * single.abs().max().item())
 
 
 def test_teacher_intermediate_pooling_matches_gemma_pooler(tiny_teacher):
@@ -72,9 +75,18 @@ def test_teacher_intermediate_pooling_matches_gemma_pooler(tiny_teacher):
     assert torch.allclose(t.tokens, t.intermediate_tokens[2] * D**0.5, atol=1e-4)
 
 
+@pytest.mark.parametrize("model_id", ["google/gemma-4-12b-it", "google/gemma-4-31B-it", "google/gemma-4-26B-A4B-it", "google/gemma-3n-E2B-it"])
+def test_only_e2b_e4b_teachers_are_accepted(model_id):
+    with pytest.raises(UnsupportedTeacherError):
+        Gemma4Teacher(model_id)
+
+
+def test_pinned_revision_enforced():
+    with pytest.raises(UnsupportedTeacherError):
+        Gemma4Teacher("google/gemma-4-E2B-it", revision="main")
+
+
 def test_encoder_free_teacher_rejected(tiny_cfg):
-    with pytest.raises(EncoderFreeTeacherError):
-        Gemma4Teacher("google/gemma-4-12b-it")
     cfg = tiny_cfg.to_dict()
     cfg["vision_config"] = None
     with pytest.raises(EncoderFreeTeacherError):

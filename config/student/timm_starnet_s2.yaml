@@ -1,0 +1,7 @@
+# StarNet-S2, 3.6M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: starnet_s2.in1k
+alignment: stem_stride3
+model_kwargs: {}

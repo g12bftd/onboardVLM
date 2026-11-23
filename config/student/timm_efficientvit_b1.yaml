@@ -1,8 +1,7 @@
-name: timm_spatial
-model_name: efficientvit_b1.r224_in1k
-out_dim: ${deploy_vision_dim}
-pretrained: true
+# EfficientViT-B1 (MIT, linear attention), 4.8M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: efficientvit_b1.r288_in1k
 alignment: stem_stride3
-head: linear
-input_norm: imagenet
-model_kwargs: {}   # timm EfficientViT (MIT) has no drop_path_rate
+model_kwargs: {}

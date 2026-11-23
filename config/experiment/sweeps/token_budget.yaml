@@ -1,0 +1,13 @@
+# @package _global_
+# Which Gemma soft-token budgets to train on (the student is evaluated at all of them):
+#   python -u run_distill.py -m +experiment=sweeps/token_budget
+experiment_name: sweep_budget_${join:${token_budgets}}
+defaults:
+  - override /teacher: gemma4_e2b
+  - override /student: gemma4_vit_l8_d384
+  - override /criterion: stage1_tokens_lm
+  - override /data_module: stage1_general
+hydra:
+  sweeper:
+    params:
+      token_budgets: "[70],[280],[1120],[140,280,560],[70,140,280,560,1120]"

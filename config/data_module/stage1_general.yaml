@@ -1,0 +1,37 @@
+# Recommended Stage-1 corpus: broad, label-free, decontaminated (see docs/corpus.md).
+# Build each corpus with make_datasets/corpus/*.py into ${corpus_root}/<group>/<name>.
+# Remove / re-weight entries freely; mix_weights are relative sampling probabilities per dataset.
+_target_: onboard_vlm.data.data_module.DistillDataModule
+train:
+  # 1. general web-scale natural images (preserves broad visual knowledge)
+  - {name: image_corpus, root: "${corpus_root}/general/datacomp12m"}
+  - {name: image_corpus, root: "${corpus_root}/general/cc12m"}
+  # 2. high-resolution, dense scenes (needed for the 560 / 1120-token budgets)
+  - {name: image_corpus, root: "${corpus_root}/highres/sa1b"}
+  # 3. text-rich: documents, charts, screens, scene text (OCR ability; TextVQA / EgoTextVQA / WearVQA)
+  - {name: image_corpus, root: "${corpus_root}/text_rich/docs_charts"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/scene_text"}
+  # 4. egocentric / smart-glasses domain (benchmark source videos excluded by the blocklist)
+  - {name: image_corpus, root: "${corpus_root}/egocentric/ego4d"}
+  - {name: image_corpus, root: "${corpus_root}/egocentric/epic_kitchens"}
+  - {name: image_corpus, root: "${corpus_root}/egocentric/aria"}
+  # 5. accessibility / wearable-quality images: benchmark TRAIN splits only
+  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: train, mode: image}
+  - {name: lmdb_vqa, path: "${data_root}/textvqa", split: train, mode: image}
+  - {name: lmdb_vqa, path: "${data_root}/egoblind", split: train, mode: image, video_frames: all}
+mix_weights: [0.25, 0.15, 0.10, 0.12, 0.06, 0.12, 0.06, 0.04, 0.04, 0.03, 0.03]
+samples_per_epoch: 2000000
+val:
+  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: image, limit: 1000}
+  - {name: lmdb_vqa, path: "${data_root}/textvqa", split: val, mode: image, limit: 1000}
+collator:
+  token_budgets: "${token_budgets}"
+  train: true
+  crop_scale: [0.35, 1.0]          # aggressive crops (cut-off / unmagnified subjects), consistent views
+  crop_ratio: [0.75, 1.3333]
+  hflip_prob: 0.0                  # mirroring corrupts text; the teacher sees the same pixels anyway
+  degradations: {motion_blur: 0.10, defocus_blur: 0.10, low_light: 0.10, rotate: 0.10, occlusion: 0.05, jpeg: 0.10}
+val_collator: {token_budgets: [280], train: false}
+batch_size: ${batch_size}
+num_workers: ${num_workers}
+seed: ${seed}

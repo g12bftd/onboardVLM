@@ -50,6 +50,8 @@ class TransformParams:
         hflip: Whether the (cropped) image is mirrored horizontally.
         target_hw: Output ``(height, width)``; both multiples of 48.
         token_budget: Gemma 4 ``max_soft_tokens`` used to derive ``target_hw``.
+        degradations: ``((op, params), ...)`` applied after the resize (``data.degrade``), identical
+            for teacher and student; ``()`` = clean image (bit-exact Gemma preprocessing).
     """
 
     src_hw: tuple[int, int]
@@ -57,6 +59,7 @@ class TransformParams:
     hflip: bool
     target_hw: tuple[int, int]
     token_budget: int
+    degradations: tuple = ()
 
     @property
     def token_grid(self) -> tuple[int, int]:
@@ -72,6 +75,8 @@ class TransformParams:
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> "TransformParams":
+        from onboard_vlm.data.degrade import freeze
+
         crop = d.get("crop_box")
         return cls(
             src_hw=tuple(d["src_hw"]),
@@ -79,6 +84,7 @@ class TransformParams:
             hflip=bool(d["hflip"]),
             target_hw=tuple(d["target_hw"]),
             token_budget=int(d["token_budget"]),
+            degradations=freeze(d.get("degradations", ())),
         )
 
 

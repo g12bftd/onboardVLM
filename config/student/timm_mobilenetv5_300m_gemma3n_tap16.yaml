@@ -1,0 +1,7 @@
+# MobileNetV5-300M (Gemma 3n weights) truncated at stride 16 + learned 3x3/s3 conv, 76M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: mobilenetv5_300m.gemma3n
+alignment: tap16_conv3
+model_kwargs: {}

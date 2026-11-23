@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -80,12 +80,14 @@ def sample_transform(
     crop_scale: tuple[float, float] = (0.5, 1.0),
     crop_ratio: tuple[float, float] = (3 / 4, 4 / 3),
     hflip_prob: float = 0.0,
+    degradations: Mapping[str, Any] | None = None,
 ) -> TransformParams:
     """Sample (train) or construct (eval) the geometric transform of one image.
 
     Training uses an Inception-style random-resized crop (area fraction ``crop_scale``,
     log-uniform aspect jitter ``crop_ratio`` relative to the source aspect) and optional
-    horizontal flip. Evaluation uses the full image, exactly like ``Gemma4ImageProcessor``.
+    horizontal flip, plus optional capture degradations (``data.degrade``, train only). Evaluation
+    uses the full, clean image, exactly like ``Gemma4ImageProcessor``.
     """
     h, w = src_hw
     crop_box = None
@@ -105,13 +107,13 @@ def sample_transform(
                 break
         hflip = rng.random() < hflip_prob
     eff_h, eff_w = (crop_box[2], crop_box[3]) if crop_box else (h, w)
-    return TransformParams(
-        src_hw=(h, w),
-        crop_box=crop_box,
-        hflip=hflip,
-        target_hw=target_size(eff_h, eff_w, token_budget),
-        token_budget=token_budget,
-    )
+    thw = target_size(eff_h, eff_w, token_budget)
+    ops = ()
+    if train and degradations:
+        from onboard_vlm.data.degrade import sample_degradations
+
+        ops = sample_degradations(degradations, rng, thw)  # type: ignore[arg-type]
+    return TransformParams(src_hw=(h, w), crop_box=crop_box, hflip=hflip, target_hw=thw, token_budget=token_budget, degradations=ops)
 
 
 def apply_transform(image: torch.Tensor, params: TransformParams) -> torch.Tensor:
@@ -140,6 +142,10 @@ def apply_transform(image: torch.Tensor, params: TransformParams) -> torch.Tenso
             interpolation=tvF.InterpolationMode.BICUBIC,
             antialias=True,
         )
+    if params.degradations:
+        from onboard_vlm.data.degrade import apply_degradations
+
+        image = apply_degradations(image, params.degradations)
     return image.contiguous()
 
 

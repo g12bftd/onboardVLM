@@ -1,0 +1,7 @@
+# RepViT-M0.9, 5.0M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: repvit_m0_9.dist_450e_in1k
+alignment: stem_stride3
+model_kwargs: {}

@@ -1,0 +1,7 @@
+# GhostNetV3-1.0x, 2.0M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: ghostnetv3_100.in1k
+alignment: stem_stride3
+model_kwargs: {}

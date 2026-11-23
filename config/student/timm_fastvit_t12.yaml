@@ -1,0 +1,7 @@
+# FastViT-T12, 6.8M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: fastvit_t12.apple_dist_in1k
+alignment: stem_stride3
+model_kwargs: {drop_path_rate: 0.1}

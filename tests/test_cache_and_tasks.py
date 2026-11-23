@@ -56,11 +56,43 @@ def test_stage1_task_trains_and_exports(tmp_path):
     assert not any(k.startswith("adapter") for k in __import__("safetensors.torch", fromlist=["load_file"]).load_file(str(tmp_path / "student.safetensors")))
 
 
-def test_stage2_task_only_updates_embed_vision(tiny_processor):
-    task = Stage2GraftedKDTask(vlm_id=None, student_dir=None, tiny_config=TINY, student=STUDENT, dtype="float32", train_embed_vision="full", gradient_checkpointing=False)
+def _stage2_loader(tiny_processor):
+    return DataLoader(SyntheticVQADataset(8), batch_size=4, collate_fn=DualViewCollator(70, build_student_view=False, text_builder=Gemma4ChatInputs(tiny_processor, "auto", with_answer=True)))
+
+
+def test_stage2_default_trains_only_the_student_encoder(tiny_processor):
+    """Default Stage 2: the whole VLM (embed_vision + LM) stays byte-identical; only the student learns."""
+    task = Stage2GraftedKDTask(vlm_id=None, student_dir=None, tiny_config=TINY, student=STUDENT, dtype="float32", gradient_checkpointing=False)
+    trainable = {n for n, p in task.named_parameters() if p.requires_grad}
+    assert trainable and all(".vision_tower.student." in n for n in trainable)
+    vlm_before = {n: p.clone() for n, p in task.grafted.vlm.named_parameters() if ".vision_tower.student." not in n}
+    stu_before = {n: p.clone() for n, p in task.grafted.student_tower.named_parameters()}
+    _trainer().fit(task, _stage2_loader(tiny_processor))
+    assert all(torch.equal(p, vlm_before[n]) for n, p in task.grafted.vlm.named_parameters() if n in vlm_before)
+    assert any(not torch.equal(p, stu_before[n]) for n, p in task.grafted.student_tower.named_parameters())
+
+
+def test_stage2_embed_vision_ablation(tiny_processor):
+    task = Stage2GraftedKDTask(vlm_id=None, student_dir=None, tiny_config=TINY, student=STUDENT, dtype="float32",
+                               train_embed_vision="full", train_student=False, gradient_checkpointing=False)
     trainable = {n for n, p in task.named_parameters() if p.requires_grad}
     assert trainable and all(".embed_vision." in n for n in trainable)
     frozen_before = {n: p.clone() for n, p in task.named_parameters() if not p.requires_grad and "language_model" in n}
-    dl = DataLoader(SyntheticVQADataset(8), batch_size=4, collate_fn=DualViewCollator(70, build_student_view=False, text_builder=Gemma4ChatInputs(tiny_processor, "auto", with_answer=True)))
-    _trainer().fit(task, dl)
+    _trainer().fit(task, _stage2_loader(tiny_processor))
     assert all(torch.equal(p, frozen_before[n]) for n, p in task.named_parameters() if n in frozen_before)
+
+
+def test_stage1_gemma4_student_with_lm_space_loss(tiny_teacher):
+    task = Stage1FeatureDistillTask(
+        student={"name": "gemma4_vit", "out_dim": 48, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 24, "position_embedding_size": 64},
+        teacher={"name": "gemma4", "tiny": TINY, "dtype": "float32"},
+        criterion=[{"name": "token_feature"}, {"name": "token_feature", "metric": "cosine", "space": "lm", "label": "lm_cos"},
+                   {"name": "intermediate_layer", "mode": "feature"}],
+        layer_map={1: 2}, optimizer={"lr": 1e-3},
+    )
+    dl = DataLoader(SyntheticVQADataset(8), batch_size=4, collate_fn=DualViewCollator([70, 140], train=True, degradations={"motion_blur": 0.5, "low_light": 0.5}))
+    before = [p.clone() for p in task.student.parameters()]
+    tr = _trainer()
+    tr.fit(task, dl)
+    assert "train/lm_cos" in tr.callback_metrics
+    assert any(not torch.equal(a, b) for a, b in zip(before, task.student.parameters()))

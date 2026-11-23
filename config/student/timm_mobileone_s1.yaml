@@ -1,0 +1,7 @@
+# MobileOne-S1 (re-parameterisable), 4.5M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: mobileone_s1.apple_in1k
+alignment: stem_stride3
+model_kwargs: {}

@@ -1,0 +1,7 @@
+# TinyViT-5M (distilled from IN-21k teacher)
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: tiny_vit_5m_224.dist_in22k_ft_in1k
+alignment: stem_stride3
+model_kwargs: {}

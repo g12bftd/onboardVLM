@@ -1,0 +1,6 @@
+# 12 layers x 512 (8 heads), ~51M.
+defaults:
+  - gemma4_vit@_here_
+  - _self_
+hidden_size: 512
+num_hidden_layers: 12

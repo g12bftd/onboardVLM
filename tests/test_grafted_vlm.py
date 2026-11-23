@@ -18,6 +18,8 @@ FAMILIES = {
     "coarse_patch_vit": {"name": "coarse_patch_vit", "out_dim": D, "embed_dim": 32, "depth": 2, "num_heads": 2},
     "multiplexed_vit": {"name": "multiplexed_vit", "out_dim": D, "embed_dim": 32, "num_heads": 2, "num_shared_blocks": 1, "steps_per_block": 2},
     "timm_spatial": {"name": "timm_spatial", "model_name": "mobilenetv4_conv_small", "out_dim": D, "pretrained": False},
+    "gemma4_vit": {"name": "gemma4_vit", "out_dim": D, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 16, "position_embedding_size": 128},
+    "gemma4_vit_p48": {"name": "gemma4_vit", "out_dim": D, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 16, "patch_size": 48},
 }
 
 

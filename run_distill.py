@@ -16,6 +16,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 log = logging.getLogger(__name__)
+OmegaConf.register_new_resolver("join", lambda xs, sep="-": sep.join(str(x) for x in xs), replace=True)
 
 
 def _logger(cfg: DictConfig):

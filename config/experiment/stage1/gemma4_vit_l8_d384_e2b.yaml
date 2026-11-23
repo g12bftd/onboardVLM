@@ -1,0 +1,13 @@
+# @package _global_
+# python -u run_distill.py +experiment=stage1/gemma4_vit_l8_d384_e2b
+experiment_name: stage1_gemma4_vit_l8_d384_e2b
+token_budgets: [140, 280, 560]   # multi-budget training; the student is budget-agnostic
+batch_size: 32
+layer_map: {1: 2, 3: 6, 5: 11}   # student layer/stage -> Gemma 4 vision layer (0..15); teacher layers kept by uniform selection: [0, 2, 4, 6, 9, 11, 13, 15]
+defaults:
+  - override /teacher: gemma4_e2b
+  - override /student: gemma4_vit_l8_d384
+  - override /criterion: stage1_full_lm
+  - override /data_module: stage1_general
+trainer:
+  max_epochs: 30

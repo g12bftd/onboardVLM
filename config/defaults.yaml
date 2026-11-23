@@ -8,10 +8,12 @@ num_workers: 8
 batch_size: 32
 
 # Paths (override with env vars or on the CLI).
-data_root: ${oc.env:ONBOARD_VLM_DATA,./data/lmdb}
+data_root: ${oc.env:ONBOARD_VLM_DATA,./data/lmdb}          # benchmark LMDBs (make_datasets/lmdb)
+corpus_root: ${oc.env:ONBOARD_VLM_CORPUS,./data/corpus}   # distillation corpora (make_datasets/corpus)
 output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
 
-# Vision width of the *deployment* VLM the student will be grafted into (768 for E2B / E4B).
+# Output width of every student: the Gemma 4 E2B/E4B vision width (the student replaces the vision
+# tower and feeds the unchanged embed_vision + language model).
 deploy_vision_dim: 768
 # Gemma 4 soft-token budgets sampled per batch during training.
 token_budgets: [280]
@@ -45,9 +47,9 @@ io:
 
 defaults:
   - _self_
-  - teacher: gemma4_e2b
-  - student: compact_vit_s
-  - criterion: stage1_tokens
-  - data_module: stage1_mix
+  - teacher: gemma4_e2b            # gemma4_e2b | gemma4_e4b | gemma4_e2b_base | gemma4_e4b_base
+  - student: gemma4_vit_l8_d384    # any config/student/*.yaml (gemma4_vit_*, timm_*, compact_vit_*, ...)
+  - criterion: stage1_tokens_lm
+  - data_module: stage1_general    # stage1_mix = benchmark train splits only (small, for quick runs)
   - task: stage1
   - trainer: gpu_ddp

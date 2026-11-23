@@ -195,28 +195,67 @@ class GraftedLogitKDLoss(nn.Module):
         return loss, logs
 
 
+SPACES = ("vision", "lm")
+
+
 class CompositeLoss(nn.Module):
-    """Weighted sum of vision losses built from ``[{name, weight, label?, **kwargs}, ...]``."""
+    """Weighted sum of vision losses built from ``[{name, weight, label?, space?, **kwargs}, ...]``.
+
+    ``space: vision`` (default) compares the 768-d vision-tower tokens. ``space: lm`` first maps
+    student and teacher final tokens through the teacher checkpoint's *frozen* ``embed_vision``
+    (scale-free RMSNorm + projection to 1536 / 2560): the exact space the language model reads.
+    Only the student is trained either way.
+    """
 
     def __init__(self, terms: Sequence[Mapping[str, Any]]):
         super().__init__()
         self.labels: list[str] = []
         self.weights: list[float] = []
+        self.spaces: list[str] = []
         losses = []
         for i, term in enumerate(terms):
             term = dict(term)
             weight = float(term.pop("weight", 1.0))
             label = term.pop("label", None) or f"{term['name']}_{i}"
+            space = term.pop("space", "vision")
+            if space not in SPACES:
+                raise ValueError(f"space must be one of {SPACES}, got {space!r}")
+            if space == "lm" and term["name"] == "intermediate_layer":
+                raise ValueError("space: lm applies to final tokens only (embed_vision sees the last layer)")
             losses.append(build_loss(term))
             self.labels.append(label)
             self.weights.append(weight)
+            self.spaces.append(space)
         self.losses = nn.ModuleList(losses)
 
-    def forward(self, student: StudentVisionOutput, teacher: TeacherVisionOutput) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    @property
+    def uses_lm_space(self) -> bool:
+        return "lm" in self.spaces
+
+    def forward(
+        self,
+        student: StudentVisionOutput,
+        teacher: TeacherVisionOutput,
+        lm_projector: Any = None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """``lm_projector``: ``[N, 768] -> [N, D_lm]`` (frozen ``embed_vision``), needed for ``space: lm`` terms."""
         total = student.tokens.new_zeros((), dtype=torch.float32)
         logs: dict[str, torch.Tensor] = {}
-        for label, w, loss in zip(self.labels, self.weights, self.losses):
-            v = loss(student, teacher)
+        lm_pair: tuple[StudentVisionOutput, TeacherVisionOutput] | None = None
+        for label, w, loss, space in zip(self.labels, self.weights, self.losses, self.spaces):
+            s, t = student, teacher
+            if space == "lm":
+                if lm_projector is None:
+                    raise RuntimeError("space: lm loss terms need the teacher's embed_vision projector")
+                if lm_pair is None:
+                    with torch.no_grad():
+                        t_lm = lm_projector(teacher.tokens)
+                    lm_pair = (
+                        StudentVisionOutput(lm_projector(student.tokens), student.image_token_lengths),
+                        TeacherVisionOutput(t_lm, teacher.image_token_lengths),
+                    )
+                s, t = lm_pair
+            v = loss(s, t)
             logs[label] = v.detach()
             total = total + w * v
         logs["total"] = total.detach()

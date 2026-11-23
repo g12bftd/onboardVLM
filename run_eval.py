@@ -48,9 +48,12 @@ def _load_model(cfg: DictConfig):
 
     from onboard_vlm.vlm.grafted import GraftedVLM
 
-    processor = AutoProcessor.from_pretrained(cfg.vlm_id)
-    if cfg.student_dir is None:
-        model = Gemma4ForConditionalGeneration.from_pretrained(cfg.vlm_id, dtype=dtype, attn_implementation="sdpa")
+    from onboard_vlm.teachers.hub import pinned_revision
+
+    rev = pinned_revision(cfg.vlm_id)
+    processor = AutoProcessor.from_pretrained(cfg.vlm_id, revision=rev)
+    if cfg.student_dir is None:  # teacher baseline: the stock VLM at the verified commit
+        model = Gemma4ForConditionalGeneration.from_pretrained(cfg.vlm_id, revision=rev, dtype=dtype, attn_implementation="sdpa")
     else:
         model = GraftedVLM.from_pretrained(cfg.vlm_id, cfg.student_dir, dtype=dtype)
     return model.to(cfg.device), processor

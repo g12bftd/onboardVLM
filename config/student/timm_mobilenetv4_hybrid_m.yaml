@@ -1,8 +1,7 @@
-name: timm_spatial
-model_name: mobilenetv4_hybrid_medium.e500_r224_in1k
-out_dim: ${deploy_vision_dim}
-pretrained: true
+# MobileNetV4-Hybrid-M (mobile MQA), 9.3M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: mobilenetv4_hybrid_medium.ix_e550_r384_in1k
 alignment: stem_stride3
-head: linear
-input_norm: imagenet
 model_kwargs: {drop_path_rate: 0.1}

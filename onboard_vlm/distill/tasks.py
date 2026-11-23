@@ -67,14 +67,11 @@ def resolve_teacher_dim(teacher_cfg: Mapping[str, Any] | None, cache_root: str |
         c = cfg["config"]
         c = Gemma4Config(**c) if isinstance(c, dict) else c
         return int(c.vision_config.hidden_size)
-    from transformers import AutoConfig
+    from onboard_vlm.teachers.hub import load_manifest, resolve_teacher
 
-    c = AutoConfig.from_pretrained(cfg["model_id"])
-    if getattr(c, "vision_config", None) is None:
-        from onboard_vlm.teachers.gemma4 import EncoderFreeTeacherError
-
-        raise EncoderFreeTeacherError(f"{cfg['model_id']} has no vision tower")
-    return int(c.vision_config.hidden_size)
+    resolve_teacher(cfg["model_id"], cfg.get("revision"))  # raises for anything but E2B/E4B
+    shape = load_manifest()["vision_tower"]["tensors"]["patch_embedder.input_proj.weight"]["shape"]
+    return int(shape[0])  # 768
 
 
 class Stage1FeatureDistillTask(pl.LightningModule):
@@ -139,11 +136,18 @@ class Stage1FeatureDistillTask(pl.LightningModule):
             t_out = batch.cached_teacher
         else:
             t_out = self.teacher.encode_vision(batch.teacher_inputs, t_layers)
-        s_out = self.student(batch.student_images, batch.valid_token_mask, return_layers=sorted(self.layer_map))
+        s_layers = sorted(self.layer_map)
+        if getattr(self.student, "accepts_teacher_patches", False) and batch.teacher_inputs is not None:
+            # Gemma-architecture students consume exactly the teacher's patch sequence.
+            ti = batch.teacher_inputs
+            s_out = self.student(pixel_values=ti.pixel_values, pixel_position_ids=ti.pixel_position_ids, return_layers=s_layers)
+        else:
+            s_out = self.student(batch.student_images, batch.valid_token_mask, return_layers=s_layers)
         if s_out.image_token_lengths != t_out.image_token_lengths:
             raise RuntimeError(f"token-count mismatch student {s_out.image_token_lengths} vs teacher {t_out.image_token_lengths}")
         s_proj = self.adapter(s_out)
-        loss, logs = self.criterion(s_proj, t_out)
+        projector = self.teacher.project_to_lm_fp32 if self.criterion.uses_lm_space else None
+        loss, logs = self.criterion(s_proj, t_out, lm_projector=projector)
         with torch.no_grad():
             logs["token_cos"] = 1.0 - self.cos_metric(s_proj, t_out)
         self.log_dict({f"{stage}/{k}": v for k, v in logs.items()}, batch_size=len(batch), prog_bar=stage == "val", sync_dist=stage == "val")
@@ -172,12 +176,19 @@ class Stage1FeatureDistillTask(pl.LightningModule):
 class Stage2GraftedKDTask(pl.LightningModule):
     """Graft the Stage-1 student into the frozen deployment VLM and distil next-token logits.
 
+    Default (``train_student=True, train_embed_vision="none"``): the whole Gemma 4 VLM, including
+    ``embed_vision`` and the language model, stays byte-identical; the VLM is used only as a
+    differentiable loss, and gradients update the student vision encoder alone. Unfreezing
+    ``embed_vision`` (full / LoRA) is available as an ablation but changes the deployed VLM.
+
     Args:
         vlm_id: deployment VLM (vision width must equal ``student.out_dim``), e.g. ``google/gemma-4-E2B-it``.
         student_dir: Stage-1 export (``student.safetensors`` + ``student_config.json``).
-        logit_teacher_id: VLM providing target logits; ``None`` = same VLM with its original vision
-            tower. A different id (e.g. ``google/gemma-4-31B-it``) is loaded separately; it must share
-            the tokenizer (true within Gemma 4) so sequences align token-for-token.
+        logit_teacher_id: VLM providing target logits; ``None`` = the deployment VLM with its original
+            vision tower (recommended, exact). Another supported id (e.g. ``google/gemma-4-E4B-it`` for an
+            E2B deployment) is fed the *deployment* tokenizer's ids. E2B and E4B tokenizers are not
+            identical (1 of 262,144 vocabulary entries and 14 BPE merges differ), so this is an
+            approximation and logs a warning.
         train_embed_vision: ``"full"`` | ``"lora"`` | ``"none"``; ``train_student`` additionally unfreezes the encoder.
         criterion: :class:`GraftedLogitKDLoss` config.
         tiny_config: build random tiny models instead of downloading (tests / dry runs).
@@ -190,10 +201,10 @@ class Stage2GraftedKDTask(pl.LightningModule):
         vlm_id: str | None,
         student_dir: str | None,
         logit_teacher_id: str | None = None,
-        train_embed_vision: str = "full",
+        train_embed_vision: str = "none",
         lora_rank: int = 16,
         lora_alpha: float = 32.0,
-        train_student: bool = False,
+        train_student: bool = True,
         criterion: Mapping[str, Any] | None = None,
         optimizer: Mapping[str, Any] | None = None,
         scheduler: Mapping[str, Any] | None = None,
@@ -223,9 +234,19 @@ class Stage2GraftedKDTask(pl.LightningModule):
             self.grafted.vlm.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         self._logit_teacher: list[nn.Module] = []
         if not same_teacher:
+            import logging
+
             from transformers import Gemma4ForConditionalGeneration
 
-            t = Gemma4ForConditionalGeneration.from_pretrained(logit_teacher_id, dtype=torch_dtype).eval().requires_grad_(False)
+            logging.getLogger(__name__).warning(
+                "logit teacher %s differs from deployment VLM %s: their tokenizers differ slightly "
+                "(1 vocab entry, 14 merges); logits are compared on the deployment tokenization", logit_teacher_id, vlm_id)
+
+            from onboard_vlm.teachers.hub import pinned_revision
+
+            t = Gemma4ForConditionalGeneration.from_pretrained(
+                logit_teacher_id, revision=pinned_revision(logit_teacher_id), dtype=torch_dtype
+            ).eval().requires_grad_(False)
             self._logit_teacher.append(t)
         self.criterion = build_loss(_plain(criterion) or {"name": "grafted_logit_kd"})
 

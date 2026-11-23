@@ -1,5 +1,0 @@
-# Frozen Gemma 4 teacher. load: vision (Stage-1, only vision-tower shards are downloaded) | vlm.
-name: gemma4
-model_id: google/gemma-4-31B-it
-load: vision
-dtype: bfloat16

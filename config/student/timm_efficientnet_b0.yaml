@@ -1,0 +1,7 @@
+# EfficientNet-B0, 3.8M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: efficientnet_b0.ra4_e3600_r224_in1k
+alignment: stem_stride3
+model_kwargs: {drop_path_rate: 0.1}

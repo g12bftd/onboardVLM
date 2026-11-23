@@ -1,0 +1,7 @@
+# MobileNetV4-Conv-L, 31M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: mobilenetv4_conv_large.e600_r384_in1k
+alignment: stem_stride3
+model_kwargs: {drop_path_rate: 0.1}

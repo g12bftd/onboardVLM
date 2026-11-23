@@ -1,0 +1,24 @@
+{
+  "model_id": "google/gemma-4-E2B-it",
+  "exact_weights_vs_manifest": true,
+  "weights_bitwise_equal_to_from_pretrained": true,
+  "embed_vision_bitwise_equal": true,
+  "budget_70": {
+    "num_tokens": 256,
+    "inputs_bitwise_equal": true,
+    "vision_tokens_bitwise_equal": true,
+    "lm_embeddings_bitwise_equal": true
+  },
+  "budget_280": {
+    "num_tokens": 1060,
+    "inputs_bitwise_equal": true,
+    "vision_tokens_bitwise_equal": true,
+    "lm_embeddings_bitwise_equal": true
+  },
+  "budget_1120": {
+    "num_tokens": 4284,
+    "inputs_bitwise_equal": true,
+    "vision_tokens_bitwise_equal": true,
+    "lm_embeddings_bitwise_equal": true
+  }
+}

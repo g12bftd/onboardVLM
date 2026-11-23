@@ -1,0 +1,7 @@
+# EfficientViT-B2, 15M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: efficientvit_b2.r288_in1k
+alignment: stem_stride3
+model_kwargs: {}

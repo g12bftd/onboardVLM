@@ -1,0 +1,7 @@
+# HGNetV2-B1, 3.0M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: hgnetv2_b1.ssld_stage2_ft_in1k
+alignment: stem_stride3
+model_kwargs: {}

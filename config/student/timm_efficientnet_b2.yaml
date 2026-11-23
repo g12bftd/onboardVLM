@@ -1,0 +1,7 @@
+# EfficientNet-B2, 7.5M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: efficientnet_b2.ra_in1k
+alignment: stem_stride3
+model_kwargs: {drop_path_rate: 0.1}
