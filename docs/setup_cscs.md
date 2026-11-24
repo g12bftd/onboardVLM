@@ -68,7 +68,7 @@ conda create -y --name onboardvlm-lmms --clone onboardvlm && conda run -n onboar
 | what | for | how |
 |---|---|---|
 | Hugging Face token | ImageNet-1k (gated, auto-approved), downloads | accept the terms on huggingface.co/datasets/timm/imagenet-1k-wds, then `hf auth login` (the token is stored in `$HF_HOME`, where the jobs find it) |
-| Kaggle API key | EgoSchema videos | `~/.kaggle/kaggle.json` (chmod 600); accept the `egoschema-public` competition rules |
+| Kaggle API token | EgoSchema videos | token from Kaggle → Settings → API, saved as `~/.kaggle/access_token` (chmod 600; a legacy `kaggle.json` also works); accept the `egoschema-public` competition rules |
 | Ego4D licence | Ego4D frames | sign at ego4d-data.org (approval takes days); `aws configure --profile ego4d` with the keys you receive |
 | SA-1B licence | SA-1B | accept at ai.meta.com/datasets/segment-anything-downloads; save the link file as `$RAW_ROOT/sa1b/sa1b_links.txt` |
 | OpenAI-compatible key | LLM judges of EgoBlind / EgoTextVQA / WearVQA (evaluation only) | `export OPENAI_API_KEY=...` |

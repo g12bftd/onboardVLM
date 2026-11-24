@@ -15,7 +15,7 @@ huggingface_hub[cli]>=0.30
 datasets>=3.0
 av>=12
 gdown>=5
-kaggle
+kaggle>=2.2   # reads ~/.kaggle/access_token (new-style API tokens)
 h5py      # NYUv2 (.mat v7.3)
 scipy     # NYUv2 splits.mat
 pyarrow   # parquet sources

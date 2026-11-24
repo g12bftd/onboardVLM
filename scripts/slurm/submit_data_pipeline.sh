@@ -37,7 +37,11 @@ skipped() { [[ "$SKIP" == *",$1,"* ]]; }
 # ---- preflight: credentials the jobs will need (fail here, not 10 hours into a job) -------------------
 problems=()
 hf auth whoami >/dev/null 2>&1 || problems+=("Hugging Face: run 'hf auth login' (after 'source scripts/paths.sh'), accept the terms of timm/imagenet-1k-wds")
-[ -f "${KAGGLE_CONFIG_DIR:-$HOME/.kaggle}/kaggle.json" ] || problems+=("Kaggle: ~/.kaggle/kaggle.json missing (EgoSchema videos)")
+kaggle_ok() {  # kaggle >= 2.2: access token (env or ~/.kaggle/access_token) or a legacy kaggle.json key
+  [ -n "${KAGGLE_API_TOKEN:-}" ] || [ -s "$HOME/.kaggle/access_token" ] || [ -s "$HOME/.kaggle/access_token.txt" ] \
+    || [ -f "${KAGGLE_CONFIG_DIR:-$HOME/.kaggle}/kaggle.json" ]
+}
+kaggle_ok || problems+=("Kaggle: no credentials (EgoSchema videos): save your API token to ~/.kaggle/access_token (chmod 600)")
 skipped sa1b || [ -f "${SA1B_LINKS:-$RAW_ROOT/sa1b/sa1b_links.txt}" ] || problems+=("SA-1B: save the link file as $RAW_ROOT/sa1b/sa1b_links.txt (or --skip sa1b)")
 skipped ego4d || grep -q "^\[ego4d\]" "$HOME/.aws/credentials" 2>/dev/null || problems+=("Ego4D: run 'aws configure --profile ego4d' with your Ego4D keys (or --skip ego4d)")
 command -v ego4d >/dev/null 2>&1 || skipped ego4d || problems+=("Ego4D CLI: pip install ego4d awscli")
