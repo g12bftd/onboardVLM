@@ -16,7 +16,7 @@ from onboard_vlm.registry import build_student
 
 CFG = os.path.join(ROOT, "config")
 STUDENTS = sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(CFG, "student", "*.yaml")))
-HEAVY = {"timm_mobilenetv5_300m_gemma3n"}  # >150M params: compose-only
+HEAVY = {"timm_mobilenetv5_300m_gemma3n", "gemma4_truncated", "gemma4_truncated_l8"}  # >150M params or needs the checkpoint: compose-only
 DATA_MODULES = sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(CFG, "data_module", "*.yaml")))
 TASK_CRITERIA = {"FeatureDistillationTask": "feature", "EmbeddingDistillationTask": "embedding", "LogitDistillationTask": "logit"}
 EXPERIMENTS = sorted(os.path.relpath(p, os.path.join(CFG, "experiment"))[:-5] for p in glob.glob(os.path.join(CFG, "experiment", "**", "*.yaml"), recursive=True))
@@ -49,7 +49,7 @@ def test_experiment_composes_and_task_matches_criterion(exp):
     cfg = _compose([f"+experiment={exp}", "student_dir=x"])
     task = cfg.task._target_.rsplit(".", 1)[-1]
     assert task in TASK_CRITERIA
-    assert exp.split("/")[0] in ("debug", TASK_CRITERIA[task])  # experiments are grouped by distillation type
+    assert exp.split("/")[0] in ("debug", "baselines", TASK_CRITERIA[task])  # experiments are grouped by distillation type
     crit = OmegaConf.to_container(cfg.criterion, resolve=True)
     OmegaConf.to_container(cfg.data_module, resolve=True)  # every interpolation resolves
     if task == "LogitDistillationTask":
@@ -63,7 +63,7 @@ def test_experiment_composes_and_task_matches_criterion(exp):
     st = OmegaConf.to_container(cfg.student, resolve=True)
     if st["name"] == "timm_spatial":
         st["pretrained"] = False
-    if st["name"] in HEAVY:
+    if st["name"] in HEAVY or st.get("model_name", "").startswith("mobilenetv5"):
         return
     s = build_student(st)
     lm = {int(k): int(v) for k, v in OmegaConf.to_container(cfg.layer_map).items()}
@@ -103,3 +103,30 @@ def test_teacher_configs_are_pinned(teacher):
 
     t = _compose([f"teacher={teacher}"]).teacher
     assert t.name == "gemma4" and t.revision == SUPPORTED_TEACHERS[t.model_id] and t.load == "vision"
+
+
+def test_corpus_split_is_defined_once():
+    """generate_targets.yaml and fidelity.yaml must use the training split definition (no train/test leakage)."""
+    with initialize_config_dir(config_dir=CFG, version_base=None):
+        ref = OmegaConf.to_container(compose("defaults").corpus_split)
+        gv = OmegaConf.to_container(compose("defaults", overrides=["data_module=general_vision"]).data_module.dataset_defaults.image_corpus, resolve=True)
+        gen = OmegaConf.to_container(compose("generate_targets").corpus_split)
+        fid = OmegaConf.to_container(compose("fidelity").corpus_split)
+    assert gen == fid == ref and {k: gv[k] for k in ref} == ref
+
+
+def test_main_protocol_defaults():
+    cfg = _compose([])
+    assert cfg.task._target_.endswith("EmbeddingDistillationTask")  # main method
+    assert list(cfg.input_domain.budgets) == [70, 140, 280, 560, 1120] and list(cfg.train_budgets) == list(cfg.input_domain.budgets)
+    dm = OmegaConf.to_container(_compose(["data_module=general_vision"]).data_module, resolve=True)
+    assert dm["sampling"]["mode"] == "crop" and dm["evaluation"]["test_budgets"] == [70, 140, 280, 560, 1120]
+    assert _compose(["trainer=gpu_ddp"]).trainer.use_distributed_sampler is False
+    assert "_s0" in cfg.run_id and cfg.run_id in cfg.export_dir
+
+
+@pytest.mark.parametrize("name", ["fidelity", "probe", "generate_targets", "eval"])
+def test_evaluation_configs_compose(name):
+    with initialize_config_dir(config_dir=CFG, version_base=None):
+        cfg = compose(name)
+    OmegaConf.to_container(cfg, resolve=True)

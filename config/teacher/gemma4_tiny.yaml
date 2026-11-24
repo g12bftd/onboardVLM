@@ -1,5 +1,6 @@
 # Tiny randomly initialised Gemma 4 (same classes, no download) for offline dry runs. Pair with deploy_vision_dim=48.
 name: gemma4
+key: tiny               # short id used in output paths (e.g. teacher-response caches)
 tiny: {vision_hidden: 48, vision_layers: 3}
 load: vision
 dtype: float32

@@ -31,11 +31,25 @@ class StudentVisionTower(nn.Module):
         chunk_size: max images per student call (video batches can carry hundreds of frames).
     """
 
-    def __init__(self, student: nn.Module, per_image: bool | None = None, chunk_size: int = 64):
+    def __init__(self, student: nn.Module, per_image: bool | None = None, chunk_size: int = 64, domain: Any = None):
         super().__init__()
         self.student = student
         self.per_image = (not getattr(student, "batch_invariant", True)) if per_image is None else per_image
         self.chunk_size = chunk_size
+        self.domain = domain  # InputDomain: inputs outside it are counted (reported by the evaluators)
+        self.images_seen = 0
+        self.out_of_domain = 0
+
+    def _count_domain(self, pixel_position_ids: torch.Tensor) -> None:
+        if self.domain is None:
+            return
+        valid = (pixel_position_ids >= 0).all(-1)
+        for pos, v in zip(pixel_position_ids, valid):
+            if not v.any():
+                continue
+            w, h = (pos[v].max(0).values + 1).tolist()
+            self.images_seen += 1
+            self.out_of_domain += int(not self.domain.contains(h * PATCH_SIZE, w * PATCH_SIZE))
 
     @property
     def dtype(self) -> torch.dtype:
@@ -43,6 +57,7 @@ class StudentVisionTower(nn.Module):
 
     def forward(self, pixel_values: torch.Tensor, pixel_position_ids: torch.Tensor, **_: Any) -> BaseModelOutputWithPooling:
         """pixel_values ``[B, P, 768]`` in [0, 1]; pixel_position_ids ``[B, P, 2]`` -> ``last_hidden_state [N, D]``."""
+        self._count_domain(pixel_position_ids)
         if getattr(self.student, "accepts_teacher_patches", False):  # Gemma-architecture students take the patches as-is
             out = self.student(pixel_values=pixel_values.to(self.dtype), pixel_position_ids=pixel_position_ids)
             return BaseModelOutputWithPooling(last_hidden_state=out.tokens)
@@ -99,7 +114,8 @@ class GraftedVLM(nn.Module):
             from the same VLM, or teacher-vs-student evaluation in one process).
     """
 
-    def __init__(self, vlm: nn.Module, student: nn.Module | None = None, keep_teacher_tower: bool = False, per_image: bool | None = None):
+    def __init__(self, vlm: nn.Module, student: nn.Module | None = None, keep_teacher_tower: bool = False, per_image: bool | None = None,
+                 domain: Any = None):
         super().__init__()
         self.vlm = vlm
         self.keep_teacher_tower = keep_teacher_tower
@@ -108,7 +124,7 @@ class GraftedVLM(nn.Module):
         self.teacher_tower = vlm.model.vision_tower if keep_teacher_tower else None
         self.student_tower: StudentVisionTower | None = None
         if student is not None:
-            self.graft(student, per_image=per_image)
+            self.graft(student, per_image=per_image, domain=domain)
 
     @classmethod
     def from_pretrained(
@@ -120,6 +136,7 @@ class GraftedVLM(nn.Module):
         attn_implementation: str = "sdpa",
         load_embed_vision: bool = True,
         revision: str | None = None,
+        domain: Any = None,
         **kw: Any,
     ) -> "GraftedVLM":
         """Load the original Gemma 4 VLM (``from_pretrained``) and graft ``student_dir``.
@@ -143,7 +160,7 @@ class GraftedVLM(nn.Module):
             ev_path = os.path.join(student_dir, "embed_vision.safetensors")
             if load_embed_vision and os.path.isfile(ev_path):
                 vlm.model.embed_vision.load_state_dict({k: v.to(torch_dtype) for k, v in load_file(ev_path).items()})
-        return cls(vlm, student, keep_teacher_tower=keep_teacher_tower)
+        return cls(vlm, student, keep_teacher_tower=keep_teacher_tower, domain=domain)
 
     def embed_vision_state_dict(self) -> dict[str, torch.Tensor]:
         """``embed_vision`` weights in the stock Gemma layout (LoRA merged), ready for export."""
@@ -159,14 +176,14 @@ class GraftedVLM(nn.Module):
     def vision_hidden_size(self) -> int:
         return int(self.vlm.config.vision_config.hidden_size)
 
-    def graft(self, student: nn.Module, per_image: bool | None = None) -> None:
+    def graft(self, student: nn.Module, per_image: bool | None = None, domain: Any = None) -> None:
         if getattr(student, "out_dim", self.vision_hidden_size) != self.vision_hidden_size:
             raise ValueError(
                 f"student.out_dim={student.out_dim} != VLM vision hidden size {self.vision_hidden_size}; "
                 "the student must be trained with out_dim equal to the deployment VLM's vision width"
             )
         ref = next(self.vlm.parameters())
-        self.student_tower = StudentVisionTower(student.to(ref.device), per_image=per_image)
+        self.student_tower = StudentVisionTower(student.to(ref.device), per_image=per_image, domain=domain)
         self.vlm.model.vision_tower = self.student_tower
         if not self.keep_teacher_tower:
             self._teacher_tower = [None]  # free the Gemma tower's memory

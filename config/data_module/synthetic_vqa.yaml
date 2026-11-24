@@ -4,9 +4,11 @@ train:
   - {name: synthetic, num_samples: 32, min_side: 96, max_side: 400}
 val:
   - {name: synthetic, num_samples: 8, min_side: 96, max_side: 400, seed: 1, group: a}
-collator: {token_budgets: [70], train: false, build_student_view: false}
+input_domain: ${input_domain}
+sampling: {mode: full, budgets: "${train_budgets}", tokens_per_batch: "${tokens_per_batch}"}
+evaluation: {val_budgets: "${val_budgets}", test_budgets: "${test_budgets}", tokens_per_batch: "${tokens_per_batch}"}
+collator: {train: false, build_student_view: false}
 text: {processor_id: tiny, prompt: auto, with_answer: true}
-batch_size: ${batch_size}
 num_workers: 0
 pin_memory: false
 seed: ${seed}

@@ -182,7 +182,7 @@ def test_data_module_rejects_leaky_split_configs(tmp_path):
                            test=[{"name": "image_corpus", "root": str(corpus / "a"), "split": "test", "group": "a"}],
                            dataset_defaults={"image_corpus": {"val_fraction": 0.3, "test_fraction": 0.3}}, num_workers=0, pin_memory=False)
     dm.setup()
-    assert dm.val_groups == ["a"] and dm.test_groups == ["a"]
+    assert dm.val_groups == [("a", None)] and dm.test_groups == [("a", None)]  # legacy (no `evaluation`): one loader per group
     assert len(dm.train_set) + len(dm.val_sets["a"]) + len(dm.test_sets["a"]) == 30
 
 

@@ -12,6 +12,7 @@ from typing import Any, Mapping
 import torch
 
 from onboard_vlm.distill.adapter import DistillationAdapter
+from onboard_vlm.distill.fidelity import fidelity_metrics
 from onboard_vlm.distill.losses import CompositeLoss, TokenFeatureLoss
 from onboard_vlm.interfaces import DistillBatch, StudentVisionOutput, TeacherVisionOutput
 from onboard_vlm.tasks.base_task import BaseDistillationTask, log, teacher_vision_dim
@@ -78,10 +79,17 @@ class FeatureDistillationTask(BaseDistillationTask):
         s_proj = self.adapter(s_out)
         loss, logs = self.compute_losses(s_proj, t_out)
         logs["total"] = loss.detach()
-        with torch.no_grad():
-            logs["token_cos"] = 1.0 - self.cos_metric(s_proj, t_out)
+        if split == "train":
+            with torch.no_grad():
+                logs["fid_vis_cos"] = 1.0 - self.cos_metric(s_out, t_out)
+        else:  # the same fidelity metrics in every task (onboard_vlm.distill.fidelity)
+            logs.update(fidelity_metrics(s_out.tokens, t_out.tokens, t_out.image_token_lengths, self.lm_projector()))
         self.log_losses(logs, split, len(batch), group)
         return loss
+
+    def lm_projector(self):
+        """The checkpoint's frozen embed_vision (None when targets come from an offline cache)."""
+        return None if self.uses_cache else self.teacher.project_to_lm
 
     def export(self, directory: str) -> None:
         """Inference export: student weights + config (the adapter is discarded)."""

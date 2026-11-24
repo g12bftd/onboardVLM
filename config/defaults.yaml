@@ -2,7 +2,10 @@
 #   CLI  >  experiment config (+experiment=...)  >  module configs  >  this file
 tag: onboard_vlm
 experiment_name: debug
-seed: 42
+seed: 0
+# Every output path uses run_id, so independent seeds never overwrite each other:
+#   python -u run_distill.py -m +experiment=embedding/gemma4_vit_l8_d384_e2b seed=0,1,2
+run_id: ${experiment_name}_s${seed}
 num_nodes: 1
 num_workers: 8
 batch_size: 32
@@ -15,11 +18,29 @@ output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
 # Output width of every student: the Gemma 4 E2B/E4B vision width (the student replaces the vision
 # tower and feeds the unchanged embed_vision + language model).
 deploy_vision_dim: 768
-# Gemma 4 soft-token budgets sampled per batch during training.
-token_budgets: [280]
+# Input domain of every student: the Gemma 4 processor outputs at these budgets for source aspect
+# ratios up to max_aspect:1. Students are trained on all of it, must cover it (checked when built) and
+# are only claimed on it (out-of-domain evaluation inputs are excluded and counted).
+input_domain: {budgets: [70, 140, 280, 560, 1120], max_aspect: 4.0}
+# Training batches: one budget + one processor shape per batch, ~tokens_per_batch soft tokens each
+# (e.g. 128 images at 70 tokens, 32 at 280, 8 at 1120). Budget weights = share of batches (compute).
+train_budgets: ${input_domain.budgets}
+train_budget_weights: null          # null = uniform over train_budgets
+tokens_per_batch: 8960
+# Evaluation budgets: val (model selection, every epoch) and test (reported once, every budget).
+val_budgets: [70, 280, 1120]
+test_budgets: ${input_domain.budgets}
+token_budgets: ${input_domain.budgets}   # legacy padded-batch path (offline teacher cache) only
+# Corpus train / val / test split (content-hashed in the loader; docs/corpus.md). generate_targets.yaml and
+# fidelity.yaml repeat it and tests/test_configs.py checks that all three agree.
+corpus_split: {val_fraction: 0.002, test_fraction: 0.002, split_seed: 0}
 # Intermediate-layer distillation: {student_layer: teacher_layer} (empty = final tokens only).
 layer_map: {}
 
+# Checkpoint selection on the validation split only, with one criterion for all three distillation types:
+# the image-weighted LM-input-space cosine over every val group and budget (onboard_vlm/distill/fidelity.py).
+selection_metric: val/fid_lm_cos
+selection_mode: max
 resume_ckpt: null
 training: true
 final_validate: true
@@ -29,7 +50,7 @@ final_test: true          # run data_module.test (if any) with the best checkpoi
 cache_root: null
 # logit_distillation: export of a feature / embedding run to graft into the VLM.
 student_dir: null
-export_dir: ${output_root}/students/${experiment_name}
+export_dir: ${output_root}/students/${run_id}
 
 callbacks:
   pipeline_logger:                 # real-time progress / stage logging (stdout + run_rank*.log)
@@ -41,23 +62,23 @@ callbacks:
   progress_bar:
     _target_: pytorch_lightning.callbacks.TQDMProgressBar
     refresh_rate: 20
-  model_checkpoint:
+  model_checkpoint:                # every task selects on the SAME metric (comparable across methods)
     _target_: pytorch_lightning.callbacks.ModelCheckpoint
-    dirpath: ${output_root}/checkpoints/${experiment_name}
-    filename: "${experiment_name}-{epoch:02d}-{val_loss:.4f}"
-    monitor: val_loss
-    mode: min
+    dirpath: ${output_root}/checkpoints/${run_id}
+    filename: "${run_id}-{epoch:02d}-{step}"
+    monitor: ${selection_metric}
+    mode: ${selection_mode}
     save_top_k: 3
     save_last: true
 
 io:
   base_output_path: ${output_root}/logs
-  version: ${experiment_name}
+  version: ${run_id}
 
 defaults:
   - _self_
-  - task: feature_distillation     # feature_distillation | embedding_distillation | logit_distillation
-  - criterion: feature_tokens      # must match the task: feature_* | embedding_* | logit_kd
+  - task: embedding_distillation   # main method; feature_distillation (ablation) | logit_distillation (stage 2)
+  - criterion: embedding_tokens    # must match the task: embedding_* | feature_* | logit_kd
   - teacher: gemma4_e2b            # gemma4_e2b | gemma4_e4b | gemma4_e2b_base | gemma4_e4b_base
   - student: gemma4_vit_l8_d384    # any config/student/*.yaml (gemma4_vit_*, timm_*, compact_vit_s, ...)
   - data_module: general_vision    # general_vision (corpus) | general_vision_lite | benchmark_train | vqa_train

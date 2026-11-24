@@ -118,7 +118,9 @@ class Gemma4Teacher(VisionTeacher, nn.Module):
         attn_implementation: str = "sdpa",
         tiny: dict[str, Any] | None = None,
         config: Any | None = None,
+        key: str | None = None,
     ):
+        """``key`` is the config's short id (used for output paths only)."""
         nn.Module.__init__(self)
         if load not in ("vision", "vlm"):
             raise ValueError(f"load must be 'vision' or 'vlm', got {load!r}")

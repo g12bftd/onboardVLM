@@ -50,6 +50,9 @@ class EmbeddingDistillationTask(FeatureDistillationTask):
             raise ValueError("embedding_distillation compares final tokens after embed_vision; put intermediate_layer terms in task.vision_criterion")
         return CompositeLoss(terms)
 
+    def lm_projector(self):
+        return self.teacher.project_to_lm  # embed_vision is always loaded for this task
+
     def setup(self, stage: str | None = None) -> None:
         _ = self.teacher  # embed_vision is always needed (also with cached vision-token targets)
 

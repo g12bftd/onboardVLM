@@ -122,7 +122,7 @@ class ShardedCorpusWriter:
         if sha in self.block_sha or (not _degenerate(h64) and self.block_idx.contains(h64)):
             self.stats["benchmark_dup"] += 1
             return False
-        enc, hw = encode_image(raw, a.max_side, a.jpeg_quality)
+        enc, hw = encode_image(raw, a.max_side if a.max_side > 0 else None, a.jpeg_quality)
         if self.writer is None or len(self.writer) >= a.shard_size:
             self._rotate()
         rec = VQARecord(sample_id=f"{a.name}/{key}", dataset=a.name, split="train", image=enc, meta=dict(meta or {}))

@@ -38,7 +38,7 @@ def _tb_logger(cfg: DictConfig):
 def train(cfg: DictConfig) -> None:
     log = get_logger("onboard_vlm.run")
     log.info("===> Run '%s' | task=%s | teacher=%s | student=%s | data=%s",
-             cfg.experiment_name, cfg.task._target_.rsplit(".", 1)[-1], cfg.teacher.get("model_id", "tiny"),
+             cfg.run_id, cfg.task._target_.rsplit(".", 1)[-1], cfg.teacher.get("model_id", "tiny"),
              cfg.student.name, cfg.data_module.get("_target_", "?").rsplit(".", 1)[-1])
     log.info("     PyTorch %s | Lightning %s | CUDA available: %s (%d devices)", torch.__version__, pl.__version__,
              torch.cuda.is_available(), torch.cuda.device_count())

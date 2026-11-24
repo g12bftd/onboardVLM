@@ -38,6 +38,7 @@ from onboard_vlm.registry import register_dataset
 FORMAT = "corpus-v1"
 KEEP_FILE = "keep.npz"
 SPLITS = ("train", "val", "test")
+ALL = "all"  # every kept image (evaluation image sets built in the corpus format)
 COMMIT_INTERVAL = 1000
 
 
@@ -163,7 +164,8 @@ class ImageCorpusDataset(Dataset):
     Args:
         root: corpus directory, a glob (``.../text_rich/*``) or a list of either. Several roots form
             one mixture component (sampled proportionally to their size).
-        split: ``"train"``, ``"val"`` or ``"test"``; assigned in the loader by :func:`assign_split`.
+        split: ``"train"``, ``"val"`` or ``"test"``, assigned in the loader by :func:`assign_split`, or
+            ``"all"`` (evaluation image sets stored in the corpus format).
         val_fraction, test_fraction, split_seed: split definition. Use the same values for every
             entry that reads a given root (``DistillDataModule.dataset_defaults`` does this and the
             data module rejects conflicting values), otherwise splits would overlap.
@@ -183,10 +185,10 @@ class ImageCorpusDataset(Dataset):
         max_shards: int | None = None,
         limit: int | None = None,
     ):
-        if split not in SPLITS:
-            raise ValueError(f"split must be one of {SPLITS}, got {split!r}")
+        if split not in (*SPLITS, ALL):
+            raise ValueError(f"split must be one of {(*SPLITS, ALL)}, got {split!r}")
         self.roots, self.split = _expand_roots(root), split
-        code = SPLITS.index(split)
+        code = SPLITS.index(split) if split != ALL else -1
         self.split_counts = dict.fromkeys(SPLITS, 0)
         self.shards: list[tuple[str, str]] = []  # (root, shard name)
         shard_ids, local, sizes = [], [], []
@@ -207,7 +209,7 @@ class ImageCorpusDataset(Dataset):
                 codes = assign_split(idx["dhash"], idx["sha1"], val_fraction, test_fraction, split_seed)
                 for c, sp in enumerate(SPLITS):
                     self.split_counts[sp] += int((kept & (codes == c)).sum())
-                pos = np.flatnonzero(kept & (codes == code)).astype(np.int32)
+                pos = np.flatnonzero(kept & ((codes == code) if code >= 0 else True)).astype(np.int32)
                 shard_ids.append(np.full(len(pos), len(self.shards), dtype=np.int32))
                 local.append(pos)
                 sizes.append(idx["sizes"][pos])

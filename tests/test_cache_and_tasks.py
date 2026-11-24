@@ -57,7 +57,7 @@ def test_feature_task_trains_and_exports(tmp_path):
     before = [p.clone() for p in task.student.parameters()]
     tr = _trainer()
     tr.fit(task, dl)
-    assert "train/total" in tr.callback_metrics and "train/token_cos" in tr.callback_metrics
+    assert "train/total" in tr.callback_metrics and "train/fid_vis_cos" in tr.callback_metrics
     assert any(not torch.equal(a, b) for a, b in zip(before, task.student.parameters()))
     task.export(str(tmp_path))
     assert (tmp_path / "student.safetensors").exists() and (tmp_path / "student_config.json").exists()
@@ -65,7 +65,7 @@ def test_feature_task_trains_and_exports(tmp_path):
 
 
 def test_feature_task_with_gemma4_student(tiny_teacher):
-    student = {"name": "gemma4_vit", "out_dim": 48, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 16, "position_embedding_size": 64}
+    student = {"name": "gemma4_vit", "out_dim": 48, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 16, "position_embedding_size": 256}
     task = FeatureDistillationTask(hparams(student=student, criterion=[{"name": "token_feature"}, {"name": "intermediate_layer", "mode": "feature"}],
                                            layer_map={1: 2}), optimizer={"lr": 1e-3})
     dl = DataLoader(SyntheticVQADataset(8), batch_size=4, collate_fn=DualViewCollator([70, 140], train=True, degradations={"motion_blur": 0.5}))
@@ -152,7 +152,7 @@ def test_per_group_validation_and_test_metrics():
                     enable_model_summary=False, num_sanity_val_steps=0)
     tr.fit(task, dm)
     m = {k: float(v) for k, v in tr.callback_metrics.items()}
-    assert {"val/web/total", "val/ego/total", "val/total", "val_loss", "val/web/token_cos"} <= set(m)
+    assert {"val/web/total", "val/ego/total", "val/total", "val_loss", "val/web/fid_vis_cos", "val/web/fid_lm_cos", "val/web/fid_cka"} <= set(m)
     assert abs(m["val/total"] - (8 * m["val/web/total"] + 4 * m["val/ego/total"]) / 12) < 1e-4 and m["val_loss"] == m["val/total"]
     tr.test(task, dm)
     assert {"test/web/total", "test/total"} <= set(tr.callback_metrics)

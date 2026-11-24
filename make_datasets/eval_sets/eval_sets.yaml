@@ -1,0 +1,30 @@
+# Evaluation image sets (docs/protocol.md). Each is downloaded once and stored in the corpus format
+# ($EVAL_ROOT/<name>: shard LMDBs + fingerprint index) by build_eval_sets.py, with no filtering and no
+# re-encoding (original bytes, so SHA-1 fingerprints match the benchmark files).
+#   roles: fidelity  -> E1 student-teacher match (run_fidelity.py)
+#          blocklist -> fingerprints removed from the training corpus (make_eval_blocklist.py --corpus_dirs)
+# HF sources are exactly the repos lmms-eval 0.7.4 evaluates (task yaml dataset_path), so the corpus is
+# decontaminated against the very images that produce the E3 numbers.
+sets:
+  # ------------------------------------------------------------- E1: held-out general images
+  coco_val2017:   {roles: [fidelity, blocklist], url: "http://images.cocodataset.org/zips/val2017.zip", folder: val2017}
+  ade20k_val:     {roles: [fidelity, blocklist], url: "http://data.csail.mit.edu/places/ADEchallenge/ADEChallengeData2016.zip", folder: ADEChallengeData2016/images/validation}
+  imagenet1k_val: {roles: [fidelity, blocklist], hf: timm/imagenet-1k-wds, include: ["imagenet1k-validation-*.tar"], tars: "imagenet1k-validation-*.tar", gated: true}
+  docvqa_val:     {roles: [fidelity, blocklist], hf: lmms-lab-encoder/DocVQA, include: ["DocVQA/validation-*.parquet"], parquet: "DocVQA/validation-*.parquet", column: image}
+  infovqa_val:    {roles: [fidelity, blocklist], hf: lmms-lab-encoder/DocVQA, include: ["InfographicVQA/validation-*.parquet"], parquet: "InfographicVQA/validation-*.parquet", column: image}
+  chartqa_test:   {roles: [fidelity, blocklist], hf: lmms-lab-encoder/ChartQA, include: ["data/test-*.parquet"], parquet: "data/test-*.parquet", column: image}
+  # ------------------------------------------------------------- E3 general benchmarks (decontamination; optional fidelity)
+  pope:           {roles: [blocklist], hf: lmms-lab-encoder/POPE, include: ["data/test-*.parquet"], parquet: "data/test-*.parquet", column: image}
+  mmvp:           {roles: [blocklist, fidelity], hf: lmms-lab-eval/MMVP, include: ["data/*.parquet"], parquet: "data/*.parquet", column: image}
+  hallusionbench: {roles: [blocklist], hf: lmms-lab-encoder/HallusionBench, include: ["data/image-*.parquet"], parquet: "data/image-*.parquet", column: image}
+  mmbench_en_dev: {roles: [blocklist], hf: lmms-lab-encoder/MMBench, include: ["en/dev-*.parquet"], parquet: "en/dev-*.parquet", column: image}
+  mmstar:         {roles: [blocklist], hf: Lin-Chen/MMStar, include: ["mmstar.parquet"], parquet: "mmstar.parquet", column: image}
+  seedbench:      {roles: [blocklist], hf: lmms-lab-encoder/SEED-Bench, include: ["data/test-*.parquet"], parquet: "data/test-*.parquet", column: image}
+  realworldqa:    {roles: [blocklist, fidelity], hf: lmms-lab-encoder/RealWorldQA, include: ["data/test-*.parquet"], parquet: "data/test-*.parquet", column: image}
+  ocrbench:       {roles: [blocklist], hf: echo840/OCRBench, include: ["data/test-*.parquet"], parquet: "data/test-*.parquet", column: image}
+  ai2d:           {roles: [blocklist], hf: lmms-lab-encoder/ai2d, include: ["data/test-*.parquet"], parquet: "data/test-*.parquet", column: image}
+  blink:          {roles: [blocklist], hf: BLINK-Benchmark/BLINK, include: ["*/val-*.parquet", "*/test-*.parquet"], parquet: "*/*.parquet", column: "image_1,image_2,image_3,image_4"}
+  mmmu_val:       {roles: [blocklist], hf: lmms-lab-encoder/MMMU, include: ["data/validation-*.parquet"], parquet: "data/validation-*.parquet", column: "image_1,image_2,image_3,image_4,image_5,image_6,image_7"}
+  cvbench:        {roles: [blocklist], hf: nyu-visionx/CV-Bench, include: ["test_2d.parquet", "test_3d.parquet"], parquet: "test_*.parquet", column: image}
+# Video benchmarks (Video-MME, MVBench) are not fingerprinted: their sources (YouTube; MVBench's public
+# video datasets) are not in the training corpus. EgoSchema / EgoTextVQA-Indoor are excluded by Ego4D video id.

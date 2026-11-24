@@ -271,13 +271,14 @@ python -u run_distill.py -m +experiment=sweeps/corpus_mixture                   
 
   Every pass is a new random crop at a sampled token budget. Following "a good teacher is patient
   and consistent" (Beyer et al., 2022), teacher and student always see the same augmented view.
-* **Validation** (`val`): one dataloader per group, covering web, objects, scenes, text-rich,
-  egocentric and target (official VizWiz val). Metrics are logged per group as
-  `val/<group>/token_cos` etc. `val/<metric>` and `val_loss` are the image-weighted means over all
-  groups; `val_loss` drives checkpoint selection.
-* **Test** (`test`): the corpus test split per group, up to 5,000 images each. It runs once after
-  training on the best checkpoint (`final_test=true`) and is never used for selection: this is the
-  "general capability preserved" number to report.
+* **Validation** (`val`): one dataloader per (group, budget) for the groups web, objects, scenes,
+  text-rich, egocentric and target (official VizWiz val), at `val_budgets` (70, 280, 1120).
+  Images are batched by exact processor shape. Metrics are logged as `val/<group>/b<budget>/fid_lm_cos`,
+  `val/<group>/...`, `val/b<budget>/...` and overall `val/...` (image-weighted). Checkpoints are
+  selected on `val/fid_lm_cos` (docs/protocol.md).
+* **Test** (`test`): the corpus test split per group, up to 5,000 images each, at every budget. It
+  runs once after training on the selected checkpoint (`final_test=true`) and is never used for
+  selection: this is the "general capability preserved" number to report.
 
 ### Ablations are CLI overrides
 
@@ -286,8 +287,8 @@ python -u run_distill.py -m +experiment=sweeps/corpus_mixture                   
 | drop one source | `data_module.mixture.ego4d=0` |
 | drop a group | `data_module.drop_groups=[egocentric]` (all groups: `+experiment=sweeps/corpus_mixture`) |
 | reweight | `data_module.mixture.cc12m=0.4 data_module.mixture.imagenet21k=0.05` |
-| bigger val split | `data_module.dataset_defaults.image_corpus.val_fraction=0.005` |
-| re-draw the splits (variance across splits) | `data_module.dataset_defaults.image_corpus.split_seed=1` |
+| bigger val split | `corpus_split.val_fraction=0.005` |
+| re-draw the splits (variance across splits) | `corpus_split.split_seed=1` |
 | fewer images (fast sweeps) | `data_module=general_vision_lite` (~2.3M images, same splits) |
 
 Adding a source takes three things: its directory, one entry in `sources.yaml`, and one YAML train

@@ -2,8 +2,6 @@
 # python -u run_distill.py +experiment=embedding/gemma4_vit_l8_d384_e4b
 # LM-input space of Gemma 4 E4B (2560-d) + vision-space intermediates.
 experiment_name: embedding_gemma4_vit_l8_d384_e4b
-token_budgets: [140, 280, 560]
-batch_size: 32
 layer_map: {2: 4, 5: 10, 7: 15}
 defaults:
   - override /task: embedding_distillation

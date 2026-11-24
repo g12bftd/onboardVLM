@@ -10,11 +10,13 @@
 #
 # Usage:  RAW_ROOT=/data/raw LMDB_ROOT=/data/lmdb CORPUS_ROOT=/data/corpus WORKERS=32 bash make_datasets/build_corpus.sh [step...]
 #         (steps: blocklist text_rich openimages sa1b imagenet21k cc12m ego4d epic_kitchens finalize; default all)
-# The benchmark LMDBs ($LMDB_ROOT, make_datasets/build_all_lmdb.sh) must exist before step 1.
+# The benchmark LMDBs ($LMDB_ROOT, make_datasets/build_all_lmdb.sh) and the evaluation image sets ($EVAL_ROOT,
+# make_datasets/eval_sets/build_eval_sets.py) must exist before step 1: the blocklist covers all of them.
 set -euo pipefail
 RAW_ROOT="${RAW_ROOT:-./data/raw}"
 LMDB_ROOT="${LMDB_ROOT:-${ONBOARD_VLM_DATA:-./data/lmdb}}"
 CORPUS_ROOT="${CORPUS_ROOT:-${ONBOARD_VLM_CORPUS:-./data/corpus}}"
+EVAL_ROOT="${EVAL_ROOT:-${ONBOARD_VLM_EVAL:-./data/eval_sets}}"   # make_datasets/eval_sets/build_eval_sets.py
 WORKERS="${WORKERS:-16}"
 C=make_datasets/corpus
 BL="$CORPUS_ROOT/eval_blocklist.json"
@@ -36,6 +38,7 @@ img() { parallel "$1" $C/make_image_corpus.py "${@:2}" --blocklist "$BL"; }
 step_blocklist() {
   python -u $C/make_eval_blocklist.py \
     --lmdb_dirs "$LMDB_ROOT"/{vizwiz,textvqa,wearvqa,egoblind,egotextvqa_outdoor_high,egotextvqa_outdoor_low,egotextvqa_indoor,egoschema,cvbench} \
+    --corpus_dirs "$EVAL_ROOT"/* \
     --egoschema_uid_map "$RAW_ROOT/egoschema/repo/uid_to_ego4d.json" --output "$BL"
 }
 step_text_rich() {

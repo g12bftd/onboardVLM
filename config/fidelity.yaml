@@ -1,0 +1,52 @@
+# E1 student-teacher fidelity (run_fidelity.py). Give student_dir (an export) or student (a config,
+# e.g. the truncated-teacher baseline). The corpus split definition must equal config/defaults.yaml.
+data_root: ${oc.env:ONBOARD_VLM_DATA,./data/lmdb}
+corpus_root: ${oc.env:ONBOARD_VLM_CORPUS,./data/corpus}
+eval_root: ${oc.env:ONBOARD_VLM_EVAL,./data/eval_sets}
+output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
+corpus_split: {val_fraction: 0.002, test_fraction: 0.002, split_seed: 0}
+input_domain: {budgets: [70, 140, 280, 560, 1120], max_aspect: 4.0}
+
+run_name: student
+student_dir: null
+student: null
+budgets: ${input_domain.budgets}
+tokens_per_batch: 8960
+dtype: bfloat16            # deployment precision for both towers; metrics are computed in fp32
+device: cuda
+num_workers: 8
+cka: true
+bootstrap: {n: 10000, seed: 0}
+output_dir: ${output_root}/fidelity/${run_name}
+
+dataset_defaults:          # merged under every set's dataset (one corpus split definition everywhere)
+  image_corpus: ${corpus_split}
+sets:
+  # in-distribution: the corpus test split of every group (never used for training or selection)
+  - {name: corpus_web, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: "${corpus_root}/cc12m"}}
+  - {name: corpus_objects, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: "${corpus_root}/imagenet21k"}}
+  - {name: corpus_scenes, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/openimages", "${corpus_root}/sa1b"]}}
+  - {name: corpus_text_rich, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}}
+  - {name: corpus_egocentric, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/egocentric/ego4d", "${corpus_root}/egocentric/epic_kitchens"]}}
+  # held-out datasets never seen in training (make_datasets/eval_sets; decontaminated by the blocklist)
+  - {name: coco_val2017, group: ood, dataset: {name: image_corpus, root: "${eval_root}/coco_val2017", split: all}}
+  - {name: ade20k_val, group: ood, dataset: {name: image_corpus, root: "${eval_root}/ade20k_val", split: all}}
+  - {name: imagenet1k_val, group: ood, dataset: {name: image_corpus, root: "${eval_root}/imagenet1k_val", split: all, limit: 10000}}
+  - {name: docvqa_val, group: ood, dataset: {name: image_corpus, root: "${eval_root}/docvqa_val", split: all}}
+  - {name: infovqa_val, group: ood, dataset: {name: image_corpus, root: "${eval_root}/infovqa_val", split: all}}
+  - {name: chartqa_test, group: ood, dataset: {name: image_corpus, root: "${eval_root}/chartqa_test", split: all}}
+  - {name: realworldqa, group: ood, dataset: {name: image_corpus, root: "${eval_root}/realworldqa", split: all}}
+  # target domain: the images of the downstream benchmarks (fidelity <-> accuracy correlation)
+  - {name: vizwiz_val, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: image}}
+  - {name: textvqa_val, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/textvqa", split: val, mode: image}}
+  - {name: wearvqa, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/wearvqa", split: test, mode: image}}
+  - {name: cvbench, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/cvbench", split: test, mode: image}}
+  - {name: egoschema_frames, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/egoschema", split: subset, mode: image, video_frames: all}}
+
+defaults:
+  - _self_
+  - teacher: gemma4_e2b
+
+hydra:
+  run:
+    dir: ${output_root}/hydra/fidelity/${run_name}

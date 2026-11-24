@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import hydra
 import torch
@@ -39,9 +40,9 @@ def _load_model(cfg: DictConfig):
         vlm = Gemma4ForConditionalGeneration(tiny_gemma4_config()).to(dtype)
         model = vlm
         if cfg.student_dir is not None:
-            model = GraftedVLM(vlm, load_student(cfg.student_dir)[0].to(dtype))
+            model = GraftedVLM(vlm, load_student(cfg.student_dir)[0].to(dtype), domain=_domain(cfg))
         elif cfg.get("tiny_student"):
-            model = GraftedVLM(vlm, build_student(to_plain(cfg.tiny_student)).to(dtype))
+            model = GraftedVLM(vlm, build_student(to_plain(cfg.tiny_student)).to(dtype), domain=_domain(cfg))
         return model.to(cfg.device), tiny_gemma4_processor()
 
     from transformers import AutoProcessor
@@ -51,11 +52,34 @@ def _load_model(cfg: DictConfig):
 
     rev = resolve_revision(cfg.vlm_id, cfg.get("revision"))
     processor = AutoProcessor.from_pretrained(cfg.vlm_id, revision=rev)
-    if cfg.student_dir is None:  # teacher baseline: the original VLM
+    if cfg.get("student"):  # a student built from config, e.g. the truncated-teacher baseline (no training)
+        scfg = to_plain(cfg.student)
+        if scfg.get("name") == "gemma4_truncated":
+            scfg = {"model_id": cfg.vlm_id, "revision": rev, **scfg}
+        model = GraftedVLM(load_gemma4_vlm(cfg.vlm_id, rev, dtype), build_student(scfg).to(dtype), domain=_domain(cfg))
+    elif cfg.student_dir is None:  # teacher baseline: the original VLM
         model = load_gemma4_vlm(cfg.vlm_id, rev, dtype)
     else:
-        model = GraftedVLM.from_pretrained(cfg.vlm_id, cfg.student_dir, dtype=dtype, revision=rev)
+        model = GraftedVLM.from_pretrained(cfg.vlm_id, cfg.student_dir, dtype=dtype, revision=rev, domain=_domain(cfg))
     return model.to(cfg.device), processor
+
+
+def _domain(cfg: DictConfig):
+    from onboard_vlm.geometry import InputDomain
+
+    return InputDomain.from_cfg(to_plain(cfg.get("input_domain")))
+
+
+def _record_domain(model, cfg: DictConfig, metrics: dict) -> None:
+    """Students are only claimed on the declared input domain: report how many inputs fell outside it."""
+    tower = getattr(model, "student_tower", None)
+    if tower is None or tower.domain is None:
+        return
+    metrics["input_domain"] = {"declared": tower.domain.describe(), "images_seen": tower.images_seen, "out_of_domain": tower.out_of_domain}
+    with open(os.path.join(cfg.output_dir, "metrics.json"), "w") as f:
+        json.dump(metrics, f, indent=2, default=str)
+    if tower.out_of_domain:
+        log.warning("     %d of %d student inputs were outside the declared input domain", tower.out_of_domain, tower.images_seen)
 
 
 @hydra.main(config_path="config", config_name="eval", version_base=None)
@@ -75,6 +99,7 @@ def main(cfg: DictConfig) -> None:
             max_new_tokens=cfg.get("max_new_tokens"), judge=to_plain(cfg.judge) if cfg.use_judge else None,
             answerability_scoring=cfg.answerability_scoring, model_name=cfg.run_name, device=cfg.device,
         )
+    _record_domain(model, cfg, metrics)
     log.info("<=== metrics\n%s", json.dumps(metrics, indent=2, default=str))
 
 

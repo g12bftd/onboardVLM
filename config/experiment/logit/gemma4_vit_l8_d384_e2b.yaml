@@ -1,13 +1,14 @@
 # @package _global_
-# python -u run_distill.py +experiment=logit/gemma4_vit_l8_d384_e2b student_dir=<export of a feature/embedding run>
+# Stage 2 of the main protocol: logit distillation through the unchanged E2B VLM, on the teacher's own
+# responses (python -u run_generate_targets.py first), starting from the embedding-distillation export:
+#   python -u run_distill.py +experiment=logit/gemma4_vit_l8_d384_e2b
 experiment_name: logit_gemma4_vit_l8_d384_e2b
-student_dir: ${output_root}/students/feature_gemma4_vit_l8_d384_e2b
-batch_size: 8
+student_dir: ${output_root}/students/embedding_gemma4_vit_l8_d384_e2b_s${seed}   # same seed chain
 defaults:
   - override /task: logit_distillation
   - override /criterion: logit_kd
   - override /teacher: gemma4_e2b
   - override /student: gemma4_vit_l8_d384
-  - override /data_module: vqa_train
+  - override /data_module: teacher_responses
 trainer:
   max_epochs: 3

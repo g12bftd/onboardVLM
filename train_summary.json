@@ -1,0 +1,11 @@
+{
+ "optimizer_steps": 3,
+ "wall_clock_s": 0.0,
+ "accelerator": "CPUAccelerator",
+ "devices": 1,
+ "device_hours": 0.0,
+ "images_seen": 12,
+ "soft_tokens_seen": 0,
+ "images_by_budget": {},
+ "tokens_by_budget": {}
+}

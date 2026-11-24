@@ -121,8 +121,25 @@ class LogitDistillationTask(BaseDistillationTask):
         s_logits = self.grafted(**inputs).logits
         loss, logs = self.criterion(s_logits, t_logits, mask, targets)
         logs["total"] = loss.detach()
+        with torch.no_grad():
+            m = mask.to(s_logits.device)
+            logs["kd_top1_agree"] = ((s_logits.argmax(-1) == t_logits.argmax(-1)) & m).sum() / m.sum().clamp_min(1)
+            if split != "train":  # the vision-token fidelity metrics every task reports
+                logs.update(self._vision_fidelity(batch))
         self.log_losses(logs, split, len(batch), group)
         return loss
+
+    @torch.no_grad()
+    def _vision_fidelity(self, batch: DistillBatch) -> dict[str, torch.Tensor]:
+        from onboard_vlm.distill.fidelity import fidelity_metrics
+
+        ti = batch.teacher_inputs
+        teacher_tower = self.grafted._original_tower()
+        dtype = next(teacher_tower.parameters()).dtype
+        t = teacher_tower(pixel_values=ti.pixel_values.to(dtype), pixel_position_ids=ti.pixel_position_ids).last_hidden_state
+        s = self.grafted.student_tower(ti.pixel_values, ti.pixel_position_ids).last_hidden_state
+        ev = self.grafted.vlm.model.embed_vision
+        return fidelity_metrics(s, t, ti.image_token_lengths, lambda z: ev(z.to(ev.embedding_projection.weight.dtype)))
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         trainable = {n for n, p in self.named_parameters() if p.requires_grad}

@@ -2,8 +2,10 @@
 # Fully offline sanity check of embedding_distillation: python run_distill.py +experiment=debug/dryrun_embedding
 experiment_name: dryrun_embedding
 deploy_vision_dim: 48
-token_budgets: [70, 140]
-batch_size: 4
+input_domain: {budgets: [70, 140], max_aspect: 4.0}   # small budgets keep the CPU dry run fast
+tokens_per_batch: 280                                 # 4 images at 70 tokens, 2 at 140
+val_budgets: [70, 140]
+test_budgets: [70]
 layer_map: {1: 0, 3: 2}
 task:
   vision_criterion:

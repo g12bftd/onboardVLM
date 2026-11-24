@@ -5,9 +5,11 @@ train:
   - {name: lmdb_vqa, path: "${data_root}/textvqa", split: train, mode: image}
   - {name: lmdb_vqa, path: "${data_root}/egoblind", split: train, mode: image, video_frames: all}
 val:
-  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: image, limit: 1000}
-collator: {token_budgets: "${token_budgets}", train: true, crop_scale: [0.5, 1.0], crop_ratio: [0.75, 1.3333], hflip_prob: 0.0}
-val_collator: {token_budgets: [280], train: false}
-batch_size: ${batch_size}
+  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: image, limit: 1000, group: vizwiz}
+input_domain: ${input_domain}
+sampling: {mode: crop, budgets: "${train_budgets}", budget_weights: "${train_budget_weights}", tokens_per_batch: "${tokens_per_batch}"}
+evaluation: {val_budgets: "${val_budgets}", test_budgets: "${test_budgets}", tokens_per_batch: "${tokens_per_batch}"}
+collator: {train: true, crop_scale: [0.35, 1.0], hflip_prob: 0.0}
+val_collator: {train: false}
 num_workers: ${num_workers}
 seed: ${seed}

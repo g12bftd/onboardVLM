@@ -108,6 +108,28 @@ def _judge(judge: J.CachedJudge | None, items: list[tuple[str, str, str]]) -> di
     return judge.judge(items)
 
 
+def _attach_judge(records: Records, judgements: dict[str, dict[str, Any]] | None, correct: Callable[[dict[str, Any]], bool]) -> None:
+    """Per-item judge verdicts on the records (``judge_correct``), for paired statistics across models."""
+    if judgements is None:
+        return
+    for r in records:
+        v = judgements.get(r["sample_id"])
+        if v is not None:
+            r["judge"] = v
+            r["judge_correct"] = float(correct(v))
+
+
+# Per-item score used for confidence intervals and paired tests (first key present on the records).
+ITEM_SCORE_KEYS = ("judge_correct", "vqa_acc", "correct", "contains")
+
+
+def item_score(record: dict[str, Any]) -> float | None:
+    for k in ITEM_SCORE_KEYS:
+        if record.get(k) is not None:
+            return float(record[k])
+    return None
+
+
 def score_egoblind(records: Records, judge: J.CachedJudge | None = None) -> dict[str, Any]:
     """Official: GPT-4o-mini judge vs. the 4 reference answers -> accuracy + mean score per question type."""
     out: dict[str, Any] = {
@@ -115,6 +137,7 @@ def score_egoblind(records: Records, judge: J.CachedJudge | None = None) -> dict
         "proxy_contains_any_ref": _mean([contains_match(r["prediction"], r["answers"]) for r in records]),
     }
     j = _judge(judge, [J.egoblind_prompts(r["sample_id"], r["question"], r["answers"], r["prediction"]) for r in records])
+    _attach_judge(records, j, lambda v: str(v.get("pred", "")).lower() == "yes")
     if j is not None:
         out["llm_judge"] = J.egoblind_metrics(j, {r["sample_id"]: r.get("category") or "" for r in records})
     return out
@@ -129,6 +152,7 @@ def score_egotextvqa(records: Records, judge: J.CachedJudge | None = None) -> di
         "aux_exact_match": _mean([normalized_exact_match(r["clean_prediction"], r["answers"]) for r in records]),
     }
     j = _judge(judge, [J.egotextvqa_prompts(r["sample_id"], r["question"], r["answers"][0], r["prediction"]) for r in records])
+    _attach_judge(records, j, lambda v: "yes" in str(v.get("pred", "no")).lower())
     if j is not None:
         out["llm_judge"] = J.egotextvqa_metrics(j, {r["sample_id"]: r.get("category") or "others" for r in records})
     return out
@@ -149,6 +173,7 @@ def score_wearvqa(records: Records, judge: J.CachedJudge | None = None) -> dict[
                 groups[str(v)].append(r["contains"])
         out[f"proxy_contains_by_{dim}"] = {k: {"total": len(v), "accuracy": _mean(v)} for k, v in sorted(groups.items())}
     j = _judge(judge, [J.wearvqa_prompts(r["sample_id"], r["question"], r["answers"][0] if r["answers"] else "", r["prediction"]) for r in records])
+    _attach_judge(records, j, lambda v: str(v.get("pred", "")).lower() == "yes")
     if j is not None:
         out["llm_judge"] = J.binary_judge_metrics(j, slices)
         out["llm_judge"]["note"] = "judge prompt is not the paper's verbatim prompt; see eval/metrics/llm_judge.py"

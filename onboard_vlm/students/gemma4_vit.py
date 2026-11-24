@@ -78,6 +78,7 @@ class Gemma4ViTStudent(VisionStudent):
         cfg.rope_parameters = {**(cfg.rope_parameters or {}), "rope_theta": rope_theta}
         cfg._attn_implementation = attn_implementation
         self.config = cfg
+        self.max_patches_per_axis = position_embedding_size  # checked against the input domain by the tasks
         self.encoder = Gemma4VisionModel(cfg)
         self.out_dim = out_dim
         self.layer_dims = {i: hidden_size for i in range(num_hidden_layers)}
@@ -108,6 +109,9 @@ class Gemma4ViTStudent(VisionStudent):
                 gh, gw = int(valid_token_mask[i].any(1).sum()), int(valid_token_mask[i].any(0).sum())
                 crops.append(images[i, :, : gh * TOKEN_STRIDE, : gw * TOKEN_STRIDE])
             pixel_values, pixel_position_ids = build_teacher_patches(crops)
+        if int(pixel_position_ids.max()) >= self.max_patches_per_axis:
+            raise ValueError(f"input has {int(pixel_position_ids.max()) + 1} patches on one axis; this student's position table "
+                             f"covers {self.max_patches_per_axis} (outside its declared input domain)")
         pixel_values = pixel_values.to(next(self.encoder.parameters()).dtype)
         captured: dict[int, torch.Tensor] = {}
         hooks = [
@@ -122,3 +126,57 @@ class Gemma4ViTStudent(VisionStudent):
         n_tok = ((pixel_position_ids >= 0).all(-1).sum(-1) // POOLING_KERNEL**2).tolist()
         inter = {i: pool_patch_states(h, pixel_position_ids)[0] for i, h in captured.items()}
         return StudentVisionOutput(tokens=self.head(out), intermediate_tokens=inter, image_token_lengths=n_tok)
+
+
+@register_student("gemma4_truncated")
+class Gemma4TruncatedTeacher(Gemma4ViTStudent):
+    """Baseline: the original Gemma 4 vision tower cut to its first ``num_layers`` layers, followed by
+    its own pooler. No new parameters; usable as-is (zero-training baseline) or as an initialisation.
+
+    Args:
+        num_layers: layers kept (teacher: 16).
+        model_id / revision / tiny: the teacher checkpoint (``tiny`` = random tiny Gemma 4 for tests).
+        load_weights: copy the teacher weights (``False`` when re-loaded from an export).
+        trainable: leave the parameters trainable (when used as an initialisation).
+    """
+
+    def __init__(self, num_layers: int = 8, out_dim: int = 768, model_id: str = "google/gemma-4-E2B-it", revision: str | None = None,
+                 tiny: dict | None = None, load_weights: bool = True, trainable: bool = False, attn_implementation: str = "sdpa", **_: object):
+        nn.Module.__init__(self)
+        import copy
+
+        from transformers.models.gemma4.modeling_gemma4 import Gemma4VisionModel
+
+        if tiny is not None:
+            from onboard_vlm.utils.tiny import tiny_gemma4_config
+
+            vcfg = copy.deepcopy(tiny_gemma4_config(**tiny).vision_config)
+        else:
+            from transformers import AutoConfig
+
+            from onboard_vlm.teachers.gemma4 import resolve_revision
+
+            vcfg = copy.deepcopy(AutoConfig.from_pretrained(model_id, revision=resolve_revision(model_id, revision)).vision_config)
+        total = vcfg.num_hidden_layers
+        if not 1 <= num_layers <= total:
+            raise ValueError(f"num_layers must be in [1, {total}], got {num_layers}")
+        if out_dim != vcfg.hidden_size:
+            raise ValueError(f"a truncated teacher emits {vcfg.hidden_size}-d tokens, got out_dim={out_dim}")
+        vcfg.num_hidden_layers = num_layers
+        vcfg._attn_implementation = attn_implementation
+        self.config = vcfg
+        self.encoder = Gemma4VisionModel(vcfg)
+        self.out_dim = vcfg.hidden_size
+        self.layer_dims = {i: vcfg.hidden_size for i in range(num_layers)}
+        self.max_patches_per_axis = vcfg.position_embedding_size
+        self.head = nn.Identity()
+        if load_weights:
+            from onboard_vlm.teachers.gemma4 import Gemma4Teacher
+
+            teacher = Gemma4Teacher(model_id, revision, load="vision", dtype="float32", tiny=tiny)
+            keep = {k: v for k, v in teacher.vision_tower.state_dict().items()
+                    if not (k.startswith("encoder.layers.") and int(k.split(".")[2]) >= num_layers)}
+            self.encoder.load_state_dict(keep, strict=True)
+            del teacher
+        self.requires_grad_(trainable)
+        log.info("     truncated teacher: first %d of %d layers -> %s", num_layers, total, describe_module(self))

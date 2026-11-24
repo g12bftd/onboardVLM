@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from onboard_vlm.data.collator import VLMEvalCollator
 from onboard_vlm.data.prompts import Gemma4ChatInputs
-from onboard_vlm.eval.benchmarks import BENCHMARKS, BenchmarkSpec
+from onboard_vlm.eval.benchmarks import BENCHMARKS, BenchmarkSpec, item_score
 from onboard_vlm.eval.metrics.llm_judge import CachedJudge, OpenAICompatibleJudge
 
 log = logging.getLogger(__name__)
@@ -104,6 +104,9 @@ def run_benchmark(
             spec.export(records, out_dir, model_name)  # type: ignore[call-arg]
         else:
             spec.export(records, out_dir)
+    with open(os.path.join(out_dir, "scored.jsonl"), "w") as f:  # per-item scores (bootstrap CIs, paired tests)
+        for r in records:
+            f.write(json.dumps({**{k: v for k, v in r.items() if k not in ("image", "frames")}, "item_score": item_score(r)}, default=str) + "\n")
     with open(os.path.join(out_dir, "metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2, default=str)
     log.info("%s: %s", spec.name, json.dumps({k: v for k, v in metrics.items() if not isinstance(v, dict)}, default=str))

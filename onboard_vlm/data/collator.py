@@ -9,7 +9,14 @@ from typing import Any, Callable, Sequence
 import torch
 from torch.utils.data import get_worker_info
 
-from onboard_vlm.geometry import apply_transform, build_teacher_patches, pad_dense, sample_transform, to_unit_float
+from onboard_vlm.geometry import (
+    apply_transform,
+    build_teacher_patches,
+    pad_dense,
+    sample_bucket_transform,
+    sample_transform,
+    to_unit_float,
+)
 from onboard_vlm.interfaces import (
     POOLING_KERNEL,
     SUPPORTED_TOKEN_BUDGETS,
@@ -82,6 +89,20 @@ class DualViewCollator(_RngMixin):
     def _transform(self, sample: dict[str, Any], budget: int, rng: random.Random) -> tuple[torch.Tensor, TransformParams]:
         img = sample["image"]
         params: TransformParams | None = sample.get("transform")  # cached / pre-specified transform
+        spec = sample.get("batch_spec")
+        if spec is not None:  # shape-exact batching (BucketedBatchSampler / ExactShapeBatchSampler)
+            if params is not None:
+                raise ValueError("cached transforms cannot be combined with shape-bucketed batches")
+            mode, b, h, w = spec
+            if mode == "crop":
+                params = sample_bucket_transform(
+                    tuple(img.shape[-2:]), (h, w), b, rng=rng, crop_scale=self.crop_scale,
+                    hflip_prob=self.hflip_prob, degradations=self.degradations if self.train else None,
+                )
+            else:  # "full": the processor's own geometry, which must give the batch's shape
+                params = sample_transform(tuple(img.shape[-2:]), b, train=False)
+                if tuple(params.target_hw) != (h, w):
+                    raise RuntimeError(f"{sample.get('sample_id')}: processor shape {params.target_hw} != batch shape {(h, w)}")
         if params is None:
             params = sample_transform(
                 tuple(img.shape[-2:]), budget, train=self.train, rng=rng,
@@ -94,7 +115,10 @@ class DualViewCollator(_RngMixin):
         if any("image" not in s for s in samples):
             raise ValueError("DualViewCollator expects image samples (use LMDBVQADataset(mode='image') for videos)")
         rng = self._rng()
-        budget = rng.choice(self.token_budgets)
+        specs = {s["batch_spec"] for s in samples if "batch_spec" in s}
+        if len(specs) > 1:
+            raise RuntimeError(f"one batch spans several shapes {specs}")
+        budget = next(iter(specs))[1] if specs else rng.choice(self.token_budgets)
         out = [self._transform(s, budget, rng) for s in samples]
         images_u8 = [o[0] for o in out]
         transforms = [o[1] for o in out]

@@ -71,9 +71,15 @@ class BaseDistillationTask(pl.LightningModule):
 
     # -- construction ---------------------------------------------------------------------------
     def build_student(self) -> nn.Module:
+        from onboard_vlm.geometry import InputDomain, check_student_covers
+
         scfg = self.cfg["student"]
         with stage(f"Building student '{scfg['name']}'", log):
-            return build_student(scfg)
+            student = build_student(scfg)
+            domain = InputDomain.from_cfg(self.cfg.get("input_domain"))
+            check_student_covers(student, domain)
+            log.info("     input domain: %s (student covers it)", domain.describe())
+            return student
 
     def load_teacher(self, load: str = "vision") -> nn.Module:
         tcfg = {**self.cfg["teacher"], "load": load}
@@ -132,37 +138,57 @@ class BaseDistillationTask(pl.LightningModule):
     def test_step(self, batch: DistillBatch, batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
         return self._step(batch, "test", self._eval_group("test", dataloader_idx))
 
-    def _eval_group(self, split: str, dataloader_idx: int) -> str | None:
+    def _eval_group(self, split: str, dataloader_idx: int) -> tuple | None:
         dm = getattr(self.trainer, "datamodule", None) if self._trainer is not None else None
         groups = getattr(dm, f"{split}_groups", None)
         return groups[dataloader_idx] if groups and dataloader_idx < len(groups) else None
 
-    def log_losses(self, logs: Mapping[str, torch.Tensor], split: str, batch_size: int, group: str | None = None) -> None:
-        """Train: per-step ``train/<k>``. Val / test: ``<split>/<group>/<k>`` per group (one dataloader
-        each), plus ``<split>/<k>`` and ``val_loss`` over all groups (image-weighted) at epoch end."""
+    def log_losses(self, logs: Mapping[str, torch.Tensor], split: str, batch_size: int, group: tuple | str | None = None) -> None:
+        """Train: per-step ``train/<k>``. Val / test: accumulated per (group, budget) and logged at
+        epoch end as ``<split>/<group>/b<budget>/<k>``, ``<split>/<group>/<k>``, ``<split>/b<budget>/<k>``
+        and ``<split>/<k>`` (image-weighted means; ``val_loss`` = ``val/total``)."""
         if split == "train":
             self.log_dict({f"train/{k}": v for k, v in logs.items()}, batch_size=batch_size)
             return
-        if group is not None:
-            self.log_dict({f"{split}/{group}/{k}": v for k, v in logs.items()}, batch_size=batch_size, sync_dist=True, add_dataloader_idx=False)
+        g, b = group if isinstance(group, tuple) else (group, None)
         acc = self._eval_sums.setdefault(split, {})
         for k, v in logs.items():
-            a = acc.setdefault(k, [0.0, 0.0])
+            a = acc.setdefault((g, b, k), [0.0, 0.0])
             a[0] += float(v) * batch_size
             a[1] += batch_size
 
     def _log_eval_totals(self, split: str) -> None:
         acc = self._eval_sums.pop(split, {})
-        if not acc:
+        if self._trainer is not None and self.trainer.world_size > 1:  # every rank calls this (collective)
+            gathered: list = [None] * self.trainer.world_size
+            torch.distributed.all_gather_object(gathered, acc)
+            acc = {}
+            for part in gathered:
+                for key, (s, n) in part.items():
+                    a = acc.setdefault(key, [0.0, 0.0])
+                    a[0] += s
+                    a[1] += n
+        agg: dict[str, list[float]] = {}
+        for (g, b, k), (s, n) in acc.items():
+            names = [f"{split}/{k}"]
+            if g is not None:
+                names.append(f"{split}/{g}/{k}")
+            if b is not None:
+                names.append(f"{split}/b{b}/{k}")
+            if g is not None and b is not None:
+                names.append(f"{split}/{g}/b{b}/{k}")
+            for name in names:
+                a = agg.setdefault(name, [0.0, 0.0])
+                a[0] += s
+                a[1] += n
+        if not agg:
             return
-        keys = sorted(acc)
-        t = torch.tensor([[acc[k][0], acc[k][1]] for k in keys], dtype=torch.float64, device=self.device)
-        if self.trainer is not None and self.trainer.world_size > 1:
-            t = self.trainer.strategy.reduce(t, reduce_op="sum")
-        means = {k: (t[i, 0] / t[i, 1].clamp_min(1)).float() for i, k in enumerate(keys)}
-        self.log_dict({f"{split}/{k}": v for k, v in means.items()}, prog_bar=split == "val")
-        if split == "val" and "total" in means:
-            self.log("val_loss", means["total"])
+        means = {k: torch.tensor(s / max(n, 1.0), dtype=torch.float32) for k, (s, n) in agg.items()}
+        self.log_dict(means, prog_bar=False)
+        self.eval_report = {"split": split, "metrics": {k: float(v) for k, v in means.items()},
+                            "num_images": {k: n for k, (_, n) in agg.items() if k.endswith("/total")}}
+        if split == "val" and "val/total" in means:
+            self.log("val_loss", means["val/total"], prog_bar=True)
 
     def on_validation_epoch_start(self) -> None:
         self._eval_sums.pop("val", None)

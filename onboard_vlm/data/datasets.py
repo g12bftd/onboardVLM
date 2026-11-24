@@ -259,3 +259,4 @@ class TargetTrainDataset(Dataset):
 
 # The general distillation corpus format and its dataset live in corpus.py (registered as image_corpus).
 from onboard_vlm.data import corpus as _corpus  # noqa: E402,F401
+from onboard_vlm.data import teacher_targets as _teacher_targets  # noqa: E402,F401  (registers teacher_responses)

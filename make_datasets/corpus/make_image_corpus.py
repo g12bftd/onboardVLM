@@ -55,22 +55,31 @@ def iter_tars(pattern: str, worker_id: int, num_workers: int):
                     yield f"{os.path.basename(shard)}/{m.name}", tf.extractfile(m).read(), {}
 
 
-def iter_parquet(pattern: str, column: str, worker_id: int, num_workers: int):
+def iter_parquet(pattern: str, columns: str, worker_id: int, num_workers: int):
+    """``columns``: one image column or a comma-separated list (BLINK image_1..4, MMMU image_1..7). A cell
+    is ``struct{bytes, path}``, raw ``bytes`` or a list of either; empty cells are skipped."""
     import pyarrow.parquet as pq
 
+    cols = [c.strip() for c in columns.split(",") if c.strip()]
     files = sorted(glob.glob(pattern, recursive=True))
     if not files:
         raise FileNotFoundError(pattern)
     for path in take_slice(files, worker_id, num_workers):
         pf = pq.ParquetFile(path)
+        present = [c for c in cols if c in pf.schema_arrow.names]
+        if not present:
+            raise KeyError(f"{path}: none of the image columns {cols} (has {pf.schema_arrow.names})")
         row = 0
-        for batch in pf.iter_batches(batch_size=256, columns=[column]):
-            for cell in batch.column(0).to_pylist():
-                items = cell if isinstance(cell, list) else [cell]
-                for j, im in enumerate(items):
-                    data = im.get("bytes") if isinstance(im, dict) else im
-                    if data:
-                        yield f"{_stem(path)}/{row}_{j}", data, {}
+        for batch in pf.iter_batches(batch_size=256, columns=present):
+            table = {c: batch.column(c).to_pylist() for c in present}
+            for r in range(batch.num_rows):
+                for c in present:
+                    cell = table[c][r]
+                    items = cell if isinstance(cell, list) else [cell]
+                    for j, im in enumerate(items):
+                        data = im.get("bytes") if isinstance(im, dict) else im
+                        if data:
+                            yield f"{_stem(path)}/{row}_{c}_{j}", data, {}
                 row += 1
 
 
@@ -78,7 +87,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--source", choices=["webdataset", "parquet", "folder"], required=True)
     p.add_argument("--input_path", required=True)
-    p.add_argument("--image_column", default="image", help="parquet column holding the image(s)")
+    p.add_argument("--image_column", default="image", help="parquet column(s) holding the image(s), comma-separated")
     add_common_args(p)
     args = p.parse_args()
     if args.source == "folder":

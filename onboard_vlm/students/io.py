@@ -28,8 +28,8 @@ def load_student(directory: str, map_location: str | torch.device = "cpu", **ove
     config = {**config, **overrides}
     if config.get("name") == "timm_spatial":
         config["pretrained"] = False  # weights come from the checkpoint
-    if config.get("name") == "gemma4_vit":
-        config["init"] = "random"  # weights come from the checkpoint (no teacher download)
+    if config.get("name") == "gemma4_truncated":
+        config["load_weights"] = False  # weights come from the checkpoint (no teacher download)
     student = build_student(config)
     student.load_state_dict(load_file(os.path.join(directory, "student.safetensors"), device=str(map_location)))
     return student, config

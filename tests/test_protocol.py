@@ -1,0 +1,243 @@
+"""The experimental protocol: input domain, shape-exact multi-budget batching, fidelity metrics,
+baselines, teacher-generated targets, evaluation runners and statistics (docs/protocol.md)."""
+
+import collections
+import json
+import os
+import random
+import subprocess
+import sys
+
+import numpy as np
+import pytest
+import torch
+from conftest import ROOT
+
+from onboard_vlm.data.collator import DualViewCollator
+from onboard_vlm.data.datasets import SyntheticVQADataset
+from onboard_vlm.data.samplers import BucketedBatchSampler, ExactShapeBatchSampler, batch_size_for
+from onboard_vlm.distill.fidelity import fidelity_metrics, linear_cka, per_image_fidelity
+from onboard_vlm.eval import stats
+from onboard_vlm.geometry import InputDomain, check_student_covers, processor_shapes, sample_transform, target_size
+from onboard_vlm.interfaces import TOKEN_STRIDE
+from onboard_vlm.registry import build_student
+
+TINY = {"vision_hidden": 48, "vision_layers": 3}
+
+
+def _run(script, *args):
+    env = {**os.environ, "PYTHONPATH": ROOT + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    r = subprocess.run([sys.executable, os.path.join(ROOT, script), *args], capture_output=True, text=True, env=env, cwd=ROOT)
+    assert r.returncode == 0, r.stderr[-4000:]
+    return r.stdout
+
+
+# ------------------------------------------------------------------------------------------- domain
+def test_input_domain_is_the_set_of_processor_outputs():
+    d = InputDomain()
+    assert d.max_patches_per_axis() == 198 and InputDomain(max_aspect=8).max_patches_per_axis() == 282
+    rng = random.Random(0)
+    for _ in range(300):  # any source within the aspect range maps into the domain at every budget
+        h = rng.randint(50, 4000)
+        w = int(h * np.exp(rng.uniform(np.log(1 / 4), np.log(4))))
+        if not 1 / 4 <= w / h <= 4:
+            continue
+        for b in d.budgets:
+            th, tw = target_size(h, w, b)
+            assert d.contains(th, tw) and th % TOKEN_STRIDE == 0 and (th // 48) * (tw // 48) <= b
+    assert not d.contains(96, 5040) and all(s in processor_shapes(280, 4.0) for s in d.shapes(280))
+
+
+def test_students_must_cover_the_domain():
+    small = build_student({"name": "gemma4_vit", "out_dim": 48, "hidden_size": 32, "num_hidden_layers": 1, "head_dim": 16, "position_embedding_size": 72})
+    with pytest.raises(ValueError, match="position"):
+        check_student_covers(small, InputDomain())
+    check_student_covers(small, InputDomain(budgets=(70, 140)))  # 69 patches per axis suffice there
+    pv = torch.zeros(1, 9, 768)
+    pos = torch.tensor([[[i, 0] for i in range(70, 79)]])
+    with pytest.raises(ValueError, match="outside its declared input domain"):
+        small(pixel_values=pv, pixel_position_ids=pos)
+
+
+# ------------------------------------------------------------------------------------------- batching
+def test_bucketed_sampler_exact_budget_shares_shapes_and_ranks():
+    kw = dict(lengths=[50, 500, 7], weights=[0.5, 0.3, 0.2], budgets=[70, 140, 280, 560, 1120], tokens_per_batch=2240,
+              samples_per_epoch=3000, budget_weights=[1, 1, 2, 0, 1], seed=3)
+    s0, s1 = BucketedBatchSampler(**kw, num_replicas=2, rank=0), BucketedBatchSampler(**kw, num_replicas=2, rank=1)
+    plan = s0.plan()
+    counts = collections.Counter(b for b, *_ in plan)
+    n = len(plan)
+    assert counts[560] == 0 and abs(counts[280] - 2 * n / 5) <= 1 and abs(counts[70] - n / 5) <= 1  # exact shares
+    b0, b1 = list(s0), list(s1)
+    assert len(b0) == len(b1) == len(s0)  # equal number of batches on every rank (no DDP hang)
+    d = InputDomain()
+    for batch in b0 + b1:
+        shapes = {(x[2], x[3], x[4]) for x in batch}
+        assert len(shapes) == 1  # one budget and one shape per batch
+        b, h, w = shapes.pop()
+        assert d.contains(h, w) and len(batch) == batch_size_for((h, w), 2240)
+    assert list(BucketedBatchSampler(**kw, num_replicas=2, rank=0)) == b0  # deterministic
+    s0.set_epoch(1)
+    assert list(s0) != b0
+
+
+def test_exact_shape_sampler_groups_and_excludes():
+    sizes = [(480, 640), (481, 641), (300, 1200), (2000, 100), (97, 131)]
+    s = ExactShapeBatchSampler(sizes, [280], 10_000, domain=InputDomain())
+    batches = list(s)
+    assert s.excluded == {280: 1}  # the 20:1 strip is outside the domain
+    for batch in batches:
+        assert len({(x[3], x[4]) for x in batch}) == 1
+        assert all(target_size(*sizes[x[1]], 280) == (x[3], x[4]) for x in batch)
+    r = [list(ExactShapeBatchSampler(sizes, [280], 300, num_replicas=2, rank=k)) for k in (0, 1)]
+    ids = [x[1] for rank in r for b in rank for x in b]
+    assert sorted(ids) == [0, 1, 2, 3, 4]  # ranks partition the evaluation set
+
+
+def test_collator_produces_padding_free_batches():
+    ds = SyntheticVQADataset(6, max_side=500)
+    coll = DualViewCollator(train=True, crop_scale=(0.35, 1.0))
+    shape = processor_shapes(140, 4.0)[3]
+    batch = coll([{**ds[i], "batch_spec": ("crop", 140, *shape)} for i in range(4)])
+    assert tuple(batch.student_images.shape[-2:]) == shape and bool(batch.valid_token_mask.all())
+    assert all(t.target_hw == shape and t.token_budget == 140 for t in batch.transforms)
+    full = DualViewCollator(train=False)
+    s = ds[0]
+    shp = sample_transform(tuple(s["image"].shape[-2:]), 70, train=False).target_hw
+    b2 = full([{**s, "batch_spec": ("full", 70, *shp)}])
+    assert b2.transforms[0] == sample_transform(tuple(s["image"].shape[-2:]), 70, train=False)
+
+
+def test_data_module_trains_every_budget_and_evaluates_per_budget():
+    from onboard_vlm.data.data_module import DistillDataModule
+
+    dm = DistillDataModule(
+        train=[{"name": "synthetic", "num_samples": 40, "group": "a", "weight": 1.0}],
+        val=[{"name": "synthetic", "num_samples": 10, "seed": 1, "group": "a"}],
+        sampling={"mode": "crop", "budgets": [70, 140], "tokens_per_batch": 280},
+        evaluation={"val_budgets": [70, 140], "tokens_per_batch": 280},
+        input_domain={"budgets": [70, 140], "max_aspect": 4.0}, samples_per_epoch=40, num_workers=0, pin_memory=False,
+    )
+    dm.setup()
+    seen = collections.Counter()
+    for batch in dm.train_dataloader():
+        assert bool(batch.valid_token_mask.all())
+        seen[batch.transforms[0].token_budget] += 1
+    assert set(seen) == {70, 140}
+    assert dm.val_groups == [("a", 70), ("a", 140)] and len(dm.val_dataloader()) == 2
+    with pytest.raises(ValueError, match="outside the input domain"):
+        DistillDataModule(train=[{"name": "synthetic"}], sampling={"budgets": [1120]}, input_domain={"budgets": [70]})
+
+
+# ------------------------------------------------------------------------------------------- fidelity
+def test_fidelity_metrics_are_per_token_scale_invariant():
+    torch.manual_seed(0)
+    t = torch.randn(30, 16)
+    s = t + 0.3 * torch.randn(30, 16)
+    proj = torch.nn.Sequential()  # stand-in for embed_vision: scale-free RMSNorm + linear
+    w = torch.randn(16, 24)
+
+    def project(z):
+        return (z * torch.rsqrt(z.pow(2).mean(-1, keepdim=True) + 1e-6)) @ w
+
+    m1 = fidelity_metrics(s, t, [10, 20], project)
+    m2 = fidelity_metrics(s * torch.rand(30, 1) * 10 + 0.0, t, [10, 20], project)  # rescale every student token
+    for k in ("fid_lm_cos", "fid_lm_rel_err", "fid_vis_cos", "fid_cka"):
+        assert torch.allclose(m1[k], m2[k], atol=1e-4), k
+    same = fidelity_metrics(t, t, [10, 20], project)
+    assert same["fid_lm_cos"] > 0.9999 and same["fid_lm_rel_err"] < 1e-5 and same["fid_cka"] > 0.9999
+    assert proj is not None and abs(float(linear_cka(t, t)) - 1) < 1e-6
+    recs = per_image_fidelity(s, t, [10, 20], project)
+    assert [r["num_tokens"] for r in recs] == [10, 20] and all("lm_cos" in r and "cka" in r for r in recs)
+
+
+# ------------------------------------------------------------------------------------------- baselines
+def test_truncated_teacher_with_all_layers_is_the_teacher(tiny_teacher):
+    full = build_student({"name": "gemma4_truncated", "num_layers": 3, "out_dim": 48, "tiny": TINY})
+    full.encoder.load_state_dict(tiny_teacher.vision_tower.state_dict())  # same random teacher as the fixture
+    ds = SyntheticVQADataset(3, max_side=300)
+    shape = target_size(*ds[0]["image"].shape[-2:], 70)
+    batch = DualViewCollator(train=False)([{**ds[0], "batch_spec": ("full", 70, *shape)}])
+    with torch.no_grad():
+        s = full(pixel_values=batch.teacher_inputs.pixel_values, pixel_position_ids=batch.teacher_inputs.pixel_position_ids).tokens
+        t = tiny_teacher.encode_vision(batch.teacher_inputs).tokens
+    torch.testing.assert_close(s, t, rtol=1e-5, atol=1e-5)
+    half = build_student({"name": "gemma4_truncated", "num_layers": 1, "out_dim": 48, "tiny": TINY})
+    assert half.config.num_hidden_layers == 1 and not any(p.requires_grad for p in half.parameters())
+
+
+def test_frozen_backbone_projector_baseline():
+    s = build_student({"name": "timm_spatial", "model_name": "mobilenetv4_conv_small", "out_dim": 16, "pretrained": False,
+                       "freeze_backbone": True, "head": "mlp"})
+    s.train()
+    assert not s.backbone.training and all(not p.requires_grad for p in s.backbone.parameters())
+    assert any(p.requires_grad for p in s.head.parameters())
+
+
+# ------------------------------------------------------------------------------------------- teacher targets
+def test_generate_teacher_responses_and_train_on_them(tmp_path):
+    _run("run_generate_targets.py", "teacher=gemma4_tiny", "device=cpu", "dtype=float32", "max_new_tokens=4", "batch_size=2",
+         "num_workers=0", "budget=70", "skip_empty=false", f"output_root={tmp_path}", f"hydra.run.dir={tmp_path}/h",
+         "sources=[{dataset: {name: synthetic, num_samples: 3, max_side: 300}}]")
+    from onboard_vlm.registry import build_dataset
+
+    d = build_dataset({"name": "teacher_responses", "path": str(tmp_path / "teacher_responses" / "tiny_train")})
+    assert len(d) == 3 and d[0]["meta"]["budget"] == 70 and d[0]["question"] in __import__("onboard_vlm.data.teacher_targets", fromlist=["x"]).DEFAULT_TEMPLATES.values()
+    prov = json.load(open(tmp_path / "teacher_responses" / "tiny_train" / "part_000.provenance.json"))
+    assert prov["num_records"] == 3 and prov["generation"]["do_sample"] is False
+
+
+# ------------------------------------------------------------------------------------------- E1 / stats
+def test_run_fidelity_end_to_end(tmp_path):
+    _run("run_fidelity.py", "teacher=gemma4_tiny", "device=cpu", "dtype=float32", "num_workers=0", "run_name=t", f"output_root={tmp_path}",
+         "student={name: gemma4_truncated, num_layers: 3, out_dim: 48}", "input_domain={budgets: [70, 140], max_aspect: 4.0}",
+         "tokens_per_batch=280", "bootstrap.n=200", "sets=[{name: syn, group: g, dataset: {name: synthetic, num_samples: 6, max_side: 400}}]")
+    summ = json.load(open(tmp_path / "fidelity" / "t" / "summary.json"))
+    rows = [json.loads(line) for line in open(tmp_path / "fidelity" / "t" / "per_image.jsonl")]
+    assert {e["budget"] for e in summ["sets"]} == {70, 140} and rows
+    # gemma4_truncated with every layer, built from the same tiny config, is a *different random* tower here,
+    # so only the structure is checked; exact equality is covered by test_truncated_teacher_with_all_layers_is_the_teacher.
+    assert all(set(e["lm_cos"]) == {"mean", "lo", "hi", "n"} for e in summ["sets"])
+
+
+def test_statistics():
+    rng = np.random.default_rng(0)
+    x = rng.normal(0.6, 0.1, 400)
+    ci = stats.bootstrap_ci(x, n_boot=2000)
+    assert ci["lo"] < x.mean() < ci["hi"] and ci["n"] == 400
+    pb = stats.paired_bootstrap(x + 0.02, x, n_boot=2000)
+    assert abs(pb["diff"] - 0.02) < 1e-9 and pb["p"] < 0.01
+    assert stats.mcnemar([1, 1, 1, 0] * 10, [0, 0, 0, 0] * 10)["p"] < 1e-6
+    assert stats.mcnemar([1, 0] * 10, [0, 1] * 10)["p"] == 1.0
+    assert stats.holm({"a": 0.01, "b": 0.04, "c": 0.03}) == {"a": 0.03, "c": 0.06, "b": 0.06}
+
+
+def test_aggregate_results(tmp_path):
+    random.seed(0)
+    for run, p_correct, seeds in (("ref", 0.7, 1), ("stu", 0.6, 2)):
+        for s in range(seeds):
+            d = tmp_path / f"{run}{s}" / "vizwiz_vqa"
+            d.mkdir(parents=True)
+            with open(d / "scored.jsonl", "w") as f:
+                for i in range(200):
+                    f.write(json.dumps({"sample_id": f"q{i}", "item_score": float(random.random() < p_correct)}) + "\n")
+    _run("scripts/aggregate_results.py", "--out", str(tmp_path / "t"), "--reference", "ref", "--eval", f"ref={tmp_path}/ref0",
+         "--eval", f"stu={tmp_path}/stu0,{tmp_path}/stu1")
+    t = json.load(open(tmp_path / "t" / "tables.json"))["benchmarks"]["vizwiz_vqa"]
+    assert t["stu"]["seeds"]["n_seeds"] == 2 and "vs_reference" in t["stu"] and "p_holm" in t["stu"]["vs_reference"]
+
+
+def test_blocklist_reads_eval_set_fingerprints(tmp_path):
+    from PIL import Image
+
+    src = tmp_path / "src"
+    src.mkdir()
+    img = Image.effect_mandelbrot((200, 150), (-2, -1.5, 1, 1.5), 40).convert("RGB")
+    img.save(src / "a.png")
+    _run("make_datasets/corpus/make_image_corpus.py", "--source", "folder", "--input_path", str(src), "--name", "ev",
+         "--output_path", str(tmp_path / "ev"), "--min_side", "1", "--min_std", "0", "--max_side", "0")
+    _run("make_datasets/corpus/make_eval_blocklist.py", "--corpus_dirs", str(tmp_path / "ev"), "--output", str(tmp_path / "bl.json"))
+    from onboard_vlm.data.hashing import sha1_bytes
+
+    bl = json.load(open(tmp_path / "bl.json"))
+    assert bl["sha1"] == [sha1_bytes((src / "a.png").read_bytes())] and bl["counts"] == {"ev/all": 1}

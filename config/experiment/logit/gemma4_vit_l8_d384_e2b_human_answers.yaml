@@ -1,0 +1,13 @@
+# @package _global_
+# Ablation: logit distillation teacher-forced on HUMAN reference answers (VizWiz / TextVQA train) instead
+# of the teacher's own responses.
+experiment_name: logit_gemma4_vit_l8_d384_e2b_human_answers
+student_dir: ${output_root}/students/embedding_gemma4_vit_l8_d384_e2b_s${seed}   # same seed chain
+defaults:
+  - override /task: logit_distillation
+  - override /criterion: logit_kd
+  - override /teacher: gemma4_e2b
+  - override /student: gemma4_vit_l8_d384
+  - override /data_module: vqa_train
+trainer:
+  max_epochs: 3

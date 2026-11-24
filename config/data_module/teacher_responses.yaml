@@ -1,0 +1,14 @@
+# logit_distillation (main protocol): teacher-forced on the teacher's OWN greedy responses
+# (run_generate_targets.py), so the KL is measured on sequences the teacher actually produces.
+_target_: onboard_vlm.data.data_module.DistillDataModule
+train:
+  - {name: teacher_responses, path: "${output_root}/teacher_responses/${teacher.key}_train"}
+val:
+  - {name: teacher_responses, path: "${output_root}/teacher_responses/${teacher.key}_val", group: heldout}
+input_domain: ${input_domain}
+sampling: {mode: full, budgets: "${train_budgets}", budget_weights: "${train_budget_weights}", tokens_per_batch: "${tokens_per_batch}"}
+evaluation: {val_budgets: "${val_budgets}", test_budgets: "${test_budgets}", tokens_per_batch: "${tokens_per_batch}"}
+collator: {train: false, build_student_view: false}
+text: {processor_id: "${teacher.model_id}", revision: "${teacher.revision}", prompt: plain, with_answer: true}
+num_workers: ${num_workers}
+seed: ${seed}

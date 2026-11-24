@@ -1,15 +1,28 @@
 """Lightning DataModule for all distillation tasks (mirrors TimeFM's EEGDataModule), with
-real-time logging of every dataset that is set up."""
+real-time logging of every dataset that is set up.
+
+Batching protocol (``sampling`` / ``evaluation`` configs):
+
+* training: :class:`BucketedBatchSampler` (random crops onto one processor shape per batch;
+  feature / embedding distillation) or :class:`ExactShapeBatchSampler` with ``mode: full`` (full
+  images; logit distillation). Every budget of the input domain is trained, batches carry ~equal
+  numbers of soft tokens, and no batch ever contains padding.
+* evaluation: one dataloader per (group, budget); images are batched by exact processor shape
+  (bit-exact Gemma preprocessing, no padding) and images outside the input domain are excluded and
+  counted.
+* all samplers are DDP-aware themselves (trainer ``use_distributed_sampler: false``).
+"""
 
 from __future__ import annotations
 
 from typing import Any, Sequence
 
 import pytorch_lightning as pl
-from torch.utils.data import ConcatDataset, DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 from onboard_vlm.data.collator import DualViewCollator
-from onboard_vlm.data.samplers import MixtureSampler, SizeBucketBatchSampler
+from onboard_vlm.data.samplers import BucketedBatchSampler, ExactShapeBatchSampler, MixtureSampler, SizeBucketBatchSampler
+from onboard_vlm.geometry import InputDomain
 from onboard_vlm.registry import build_dataset
 from onboard_vlm.utils.config import to_plain
 from onboard_vlm.utils.logging import get_logger
@@ -39,6 +52,37 @@ def build_text_builder(cfg: dict[str, Any] | None):
     log.info("     loading original Gemma 4 processor %s@%s (chat template, image-token expansion)", pid, rev[:7])
     processor = AutoProcessor.from_pretrained(pid, revision=rev)
     return Gemma4ChatInputs(processor, **cfg)
+
+
+class ShapedDataset(Dataset):
+    """Indexed by the batch samplers' ``(mode, index, budget, H, W)`` keys: returns the sample with its
+    ``batch_spec`` so that the collator produces exactly that shape."""
+
+    def __init__(self, base: Dataset):
+        self.base = base
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, key: tuple) -> dict[str, Any]:
+        mode, i, b, h, w = key
+        sample = dict(self.base[i])
+        sample["batch_spec"] = (mode, b, h, w)
+        return sample
+
+
+def dataset_sizes(ds: Dataset) -> list[tuple[int, int]]:
+    """Source ``(h, w)`` of every item (from dataset metadata; decodes an item only when missing)."""
+    if isinstance(ds, ConcatDataset):
+        return [s for d in ds.datasets for s in dataset_sizes(d)]
+    sizes = getattr(ds, "sizes", None)
+    out = []
+    for i in range(len(ds)):
+        s = sizes[i] if sizes is not None else None
+        if s is None:
+            s = tuple(ds[i]["image"].shape[-2:])
+        out.append((int(s[0]), int(s[1])))
+    return out
 
 
 def _describe(cfg: dict[str, Any]) -> str:
@@ -71,8 +115,14 @@ class DistillDataModule(pl.LightningDataModule):
         drop_groups: train groups whose entries get weight 0 (e.g. ``[egocentric]``).
         mix_weights: relative sampling weight per training dataset; overrides per-entry ``weight``.
             ``None`` and no ``weight`` keys = uniform over the concatenation (proportional to size).
-        samples_per_epoch: epoch length when weights are used (default: total size).
-        bucket_by_size: group equal-target-size images (only meaningful with deterministic geometry).
+        samples_per_epoch: approximate images per epoch (default: total size).
+        sampling: training batches. ``{mode: crop|full, budgets, budget_weights, tokens_per_batch,
+            camera_aspects, camera_prob}`` (``crop``: :class:`BucketedBatchSampler`; ``full``:
+            :class:`ExactShapeBatchSampler`). ``None`` = legacy padded batches of ``batch_size``.
+        evaluation: ``{val_budgets, test_budgets, tokens_per_batch, filter_domain}``: one val / test
+            dataloader per (group, budget), shape-exact. ``None`` = legacy single-budget padded batches.
+        input_domain: ``{budgets, max_aspect}`` (:class:`InputDomain`), shared with the students.
+        bucket_by_size: legacy: group equal-target-size images (deterministic geometry, e.g. a cache).
     """
 
     def __init__(
@@ -91,6 +141,9 @@ class DistillDataModule(pl.LightningDataModule):
         drop_groups: Sequence[str] = (),
         mix_weights: Sequence[float] | None = None,
         samples_per_epoch: int | None = None,
+        sampling: dict[str, Any] | None = None,
+        evaluation: dict[str, Any] | None = None,
+        input_domain: dict[str, Any] | None = None,
         bucket_by_size: bool = False,
         pin_memory: bool = True,
         seed: int = 0,
@@ -126,6 +179,15 @@ class DistillDataModule(pl.LightningDataModule):
         self.num_workers, self.pin_memory, self.seed = num_workers, pin_memory, seed
         self.mix_weights = to_plain(mix_weights)
         self.samples_per_epoch = samples_per_epoch
+        self.sampling = dict(to_plain(sampling) or {}) or None
+        self.evaluation = dict(to_plain(evaluation) or {}) or None
+        self.domain = InputDomain.from_cfg(to_plain(input_domain))
+        if self.sampling and self.sampling.get("mode", "crop") not in ("crop", "full"):
+            raise ValueError(f"sampling.mode must be crop or full, got {self.sampling.get('mode')}")
+        if self.sampling:
+            bad = set(self.sampling.get("budgets", self.domain.budgets)) - set(self.domain.budgets)
+            if bad:
+                raise ValueError(f"training budgets {sorted(bad)} are outside the input domain {list(self.domain.budgets)}")
         self.bucket_by_size = bucket_by_size
         self.train_set = None
         self.val_sets: dict[str, ConcatDataset] = {}
@@ -133,17 +195,32 @@ class DistillDataModule(pl.LightningDataModule):
         self._is_setup = False
 
     @property
-    def val_groups(self) -> list[str]:
-        return list(self.val_sets)
+    def val_groups(self) -> list[tuple[str, int | None]]:
+        """``(group, budget)`` of every val dataloader, in order (budget ``None`` in legacy mode)."""
+        return [(g, b) for g in self.val_sets for b in self._eval_budgets("val")]
 
     @property
-    def test_groups(self) -> list[str]:
-        return list(self.test_sets)
+    def test_groups(self) -> list[tuple[str, int | None]]:
+        return [(g, b) for g in self.test_sets for b in self._eval_budgets("test")]
+
+    def _eval_budgets(self, split: str) -> list[int | None]:
+        if not self.evaluation:
+            return [None]
+        budgets = [int(b) for b in self.evaluation.get(f"{split}_budgets", self.domain.budgets)]
+        bad = set(budgets) - set(self.domain.budgets)
+        if bad:
+            raise ValueError(f"{split} budgets {sorted(bad)} are outside the input domain {list(self.domain.budgets)}")
+        return budgets
 
     def setup(self, stage: str | None = None) -> None:
         if self._is_setup:
             return
         with log_stage("Setting up datasets", log):
+            log.info("     input domain: %s", self.domain.describe())
+            if self.sampling:
+                log.info("     training batches: %s (shape-exact, token-balanced, no padding)", self.sampling)
+            if self.evaluation:
+                log.info("     evaluation: %s (one loader per group x budget, shape-exact)", self.evaluation)
             if self.mixture:
                 log.info("     mixture: %s", ", ".join(f"{k}={v}" for k, v in self.mixture.items()))
             if self.drop_groups:
@@ -164,8 +241,8 @@ class DistillDataModule(pl.LightningDataModule):
             self.val_sets = self._build_eval_sets("val", self.val_cfgs)
             self.test_sets = self._build_eval_sets("test", self.test_cfgs)
             self.eval_collate = DualViewCollator(**self.val_collator_cfg, text_builder=text_builder, seed=self.seed + 1)
-            log.info("     batch_size=%d (eval %d) | num_workers=%d | samples_per_epoch=%s",
-                     self.batch_size, self.val_batch_size, self.num_workers, self.samples_per_epoch)
+            log.info("     num_workers=%d | samples_per_epoch=%s%s", self.num_workers, self.samples_per_epoch,
+                     "" if self.sampling else f" | legacy padded batches of {self.batch_size} (eval {self.val_batch_size})")
         self._is_setup = True
 
     def _build_eval_sets(self, split: str, cfgs: list[dict[str, Any]]) -> dict[str, ConcatDataset]:
@@ -198,26 +275,61 @@ class DistillDataModule(pl.LightningDataModule):
         return dict(num_workers=self.num_workers, pin_memory=self.pin_memory, persistent_workers=self.num_workers > 0)
 
     def train_dataloader(self) -> DataLoader:
+        if self.sampling:
+            return self._shaped_train_loader()
         if self.bucket_by_size:
             sizes = [s for d in self.train_parts for s in getattr(d, "sizes", [None] * len(d))]
             budget = self.collator_cfg.get("token_budgets", 280)
             budget = budget if isinstance(budget, int) else list(budget)[0]
             sampler = SizeBucketBatchSampler(sizes, self.batch_size, budget, shuffle=True, drop_last=True, seed=self.seed)
             return DataLoader(self.train_set, batch_sampler=sampler, collate_fn=self.train_collate, **self._loader_kwargs())
-        if self.mix_weights is not None:
-            sampler = MixtureSampler([len(d) for d in self.train_parts], self.mix_weights,
-                                     self.samples_per_epoch or len(self.train_set), seed=self.seed)
-            return DataLoader(self.train_set, batch_size=self.batch_size, sampler=sampler, drop_last=True, collate_fn=self.train_collate, **self._loader_kwargs())
-        return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True, drop_last=True, collate_fn=self.train_collate, **self._loader_kwargs())
+        weights = self.mix_weights if self.mix_weights is not None else [len(d) for d in self.train_parts]
+        sampler = MixtureSampler([len(d) for d in self.train_parts], weights, self.samples_per_epoch or len(self.train_set), seed=self.seed, shard=True)
+        return DataLoader(self.train_set, batch_size=self.batch_size, sampler=sampler, drop_last=True, collate_fn=self.train_collate, **self._loader_kwargs())
 
-    def _eval_loaders(self, sets: dict[str, ConcatDataset]) -> list[DataLoader]:
-        return [DataLoader(d, batch_size=self.val_batch_size, shuffle=False, collate_fn=self.eval_collate, **self._loader_kwargs()) for d in sets.values()]
+    def _shaped_train_loader(self) -> DataLoader:
+        cfg = self.sampling
+        budgets = cfg.get("budgets", list(self.domain.budgets))
+        tokens = int(cfg.get("tokens_per_batch", 8960))
+        if cfg.get("mode", "crop") == "crop":
+            sampler = BucketedBatchSampler(
+                [len(d) for d in self.train_parts], self.mix_weights, budgets, tokens,
+                self.samples_per_epoch or len(self.train_set), budget_weights=cfg.get("budget_weights"),
+                max_aspect=self.domain.max_aspect, camera_aspects=cfg.get("camera_aspects", (4 / 3, 3 / 4, 16 / 9, 9 / 16)),
+                camera_prob=cfg.get("camera_prob", 0.5), seed=self.seed,
+            )
+            ebs = sampler.expected_batch_size()
+            log.info("     train batches/epoch per rank: %d | mean images per batch by budget: %s", len(sampler),
+                     ", ".join(f"{b}: {v:.1f}" for b, v in ebs.items()))
+        else:
+            if self.mix_weights is not None:
+                raise ValueError("sampling.mode=full uses every image once per epoch; mixture weights are not supported")
+            sampler = ExactShapeBatchSampler(dataset_sizes(self.train_set), budgets, tokens, budget_weights=cfg.get("budget_weights"),
+                                             shuffle=True, domain=self.domain, seed=self.seed)
+            log.info("     train batches/epoch per rank: %d (full images; %s excluded outside the input domain)", len(sampler), sampler.excluded)
+        return DataLoader(ShapedDataset(self.train_set), batch_sampler=sampler, collate_fn=self.train_collate, **self._loader_kwargs())
+
+    def _eval_loaders(self, sets: dict[str, ConcatDataset], split: str) -> list[DataLoader]:
+        if not self.evaluation:
+            return [DataLoader(d, batch_size=self.val_batch_size, shuffle=False, collate_fn=self.eval_collate, **self._loader_kwargs()) for d in sets.values()]
+        cfg = self.evaluation
+        tokens = int(cfg.get("tokens_per_batch", 8960))
+        domain = self.domain if cfg.get("filter_domain", True) else None
+        loaders = []
+        for g, d in sets.items():
+            sizes = dataset_sizes(d)
+            for b in self._eval_budgets(split):
+                sampler = ExactShapeBatchSampler(sizes, [b], tokens, shuffle=False, domain=domain, seed=self.seed)
+                if sampler.excluded.get(b):
+                    log.info("     %s [%s] budget %d: %d images outside the input domain excluded", split, g, b, sampler.excluded[b])
+                loaders.append(DataLoader(ShapedDataset(d), batch_sampler=sampler, collate_fn=self.eval_collate, **self._loader_kwargs()))
+        return loaders
 
     def val_dataloader(self) -> list[DataLoader]:
-        return self._eval_loaders(self.val_sets)
+        return self._eval_loaders(self.val_sets, "val")
 
     def test_dataloader(self) -> list[DataLoader]:
-        return self._eval_loaders(self.test_sets)
+        return self._eval_loaders(self.test_sets, "test")
 
 
 def _split_info(ds: Any) -> str:

@@ -16,8 +16,10 @@ batch; it is always bottom/right and in whole 48-px cells.
 
 from __future__ import annotations
 
+import functools
 import math
 import random
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 import torch
@@ -69,6 +71,109 @@ def target_size(
 
 
 # --------------------------------------------------------------------------------------
+# Input domain: the processor outputs a student must handle
+# --------------------------------------------------------------------------------------
+@functools.lru_cache(maxsize=None)
+def processor_shapes(token_budget: int, max_aspect: float) -> tuple[tuple[int, int], ...]:
+    """Every ``(H, W)`` the Gemma 4 processor emits at ``token_budget`` for a source aspect ratio
+    ``r = W/H`` in ``[1/max_aspect, max_aspect]`` (exact enumeration).
+
+    The processor's size depends on the source only through ``r`` (small images are upsampled):
+    ``H = 48 floor(sqrt(P / r) / 48)`` and ``W = 48 floor(sqrt(P r) / 48)`` with ``P = 256 * 9 * budget``.
+    ``H`` changes at ``r = P / (48 k)^2`` and ``W`` at ``r = (48 k)^2 / P``; evaluating the reference
+    implementation at every breakpoint and between consecutive breakpoints yields every shape.
+    """
+    side = POOLING_KERNEL * PATCH_SIZE
+    p = token_budget * POOLING_KERNEL**2 * PATCH_SIZE**2
+    lo, hi = 1.0 / max_aspect, float(max_aspect)
+    kmax = int(math.sqrt(p * hi) / side) + 2
+    bps = {lo, hi}
+    for k in range(1, kmax + 1):
+        for r in (p / (side * k) ** 2, (side * k) ** 2 / p):
+            if lo < r < hi:
+                bps.add(r)
+    pts = sorted(bps)
+    big = 1 << 40  # integer ratio resolution 1e-12, far below the 1e-9 breakpoint offsets used below
+
+    def at(r: float) -> tuple[int, int]:
+        h, w = (big, round(big * r)) if r >= 1 else (round(big / r), big)
+        return target_size(h, w, token_budget)
+
+    out: dict[tuple[int, int], None] = {}
+    for a, b in zip(pts, pts[1:]):  # the shape is constant strictly between consecutive breakpoints
+        out[at((a + b) / 2)] = None
+    for r in pts:  # on a breakpoint, float rounding can land on either side of each floor independently
+        (h1, w1), (h2, w2) = at(r * (1 - 1e-9)), at(r * (1 + 1e-9))
+        for cand in {(h1, w1), (h2, w2), (h1, w2), (h2, w1)}:
+            if cand[0] > 0 and cand[1] > 0 and (cand[0] // PATCH_SIZE) * (cand[1] // PATCH_SIZE) <= p // PATCH_SIZE**2:
+                out[cand] = None
+    return tuple(out)
+
+
+def shape_for_aspect(aspect: float, token_budget: int) -> tuple[int, int]:
+    """Processor output size for a source with aspect ratio ``aspect`` (= W / H)."""
+    big = 1 << 16
+    return target_size(max(1, round(big / math.sqrt(aspect))), max(1, round(big * math.sqrt(aspect))), token_budget)
+
+
+@dataclass(frozen=True)
+class InputDomain:
+    """The declared input domain of every student: processor outputs at ``budgets`` for source
+    aspect ratios within ``[1/max_aspect, max_aspect]``.
+
+    The teacher handles any processor output; a student is only claimed (and evaluated) on this
+    domain. Students with learned position tables must cover :meth:`max_patches_per_axis`, and the
+    grafted tower counts any input outside the domain (``StudentVisionTower.out_of_domain``).
+    """
+
+    budgets: tuple[int, ...] = SUPPORTED_TOKEN_BUDGETS
+    max_aspect: float = 4.0
+
+    def __post_init__(self) -> None:
+        bad = set(self.budgets) - set(SUPPORTED_TOKEN_BUDGETS)
+        if bad or not self.budgets:
+            raise ValueError(f"budgets must be a non-empty subset of {SUPPORTED_TOKEN_BUDGETS}, got {self.budgets}")
+        if self.max_aspect < 1:
+            raise ValueError(f"max_aspect must be >= 1, got {self.max_aspect}")
+        object.__setattr__(self, "budgets", tuple(sorted(int(b) for b in self.budgets)))
+
+    @classmethod
+    def from_cfg(cls, cfg: Mapping[str, Any] | None) -> "InputDomain":
+        cfg = dict(cfg or {})
+        return cls(budgets=tuple(cfg.get("budgets", SUPPORTED_TOKEN_BUDGETS)), max_aspect=float(cfg.get("max_aspect", 4.0)))
+
+    def shapes(self, token_budget: int | None = None) -> tuple[tuple[int, int], ...]:
+        budgets = self.budgets if token_budget is None else (token_budget,)
+        return tuple(dict.fromkeys(s for b in budgets for s in processor_shapes(b, self.max_aspect)))
+
+    def contains(self, height: int, width: int) -> bool:
+        return (int(height), int(width)) in _shape_set(self.budgets, self.max_aspect)
+
+    def max_patches_per_axis(self) -> int:
+        return max(max(h, w) for h, w in self.shapes()) // PATCH_SIZE
+
+    def describe(self) -> str:
+        return (f"budgets {list(self.budgets)}, aspect <= {self.max_aspect:g}:1 -> {len(self.shapes())} shapes, "
+                f"up to {self.max_patches_per_axis()} patches per axis")
+
+
+def check_student_covers(student: Any, domain: InputDomain) -> None:
+    """Raise if ``student`` cannot represent every input of ``domain`` (learned position tables)."""
+    cap = getattr(student, "max_patches_per_axis", None)
+    need = domain.max_patches_per_axis()
+    if cap is not None and cap < need:
+        raise ValueError(
+            f"{type(student).__name__} has positions for {cap} patches per axis, but the input domain "
+            f"({domain.describe()}) needs {need}: raise position_embedding_size or narrow input_domain.max_aspect"
+        )
+
+
+@functools.lru_cache(maxsize=None)
+def _shape_set(budgets: tuple[int, ...], max_aspect: float) -> frozenset[tuple[int, int]]:
+    return frozenset(s for b in budgets for s in processor_shapes(b, max_aspect))
+
+
+# --------------------------------------------------------------------------------------
 # Transform sampling / application (the ONLY place images are geometrically transformed)
 # --------------------------------------------------------------------------------------
 def sample_transform(
@@ -114,6 +219,42 @@ def sample_transform(
 
         ops = sample_degradations(degradations, rng, thw)  # type: ignore[arg-type]
     return TransformParams(src_hw=(h, w), crop_box=crop_box, hflip=hflip, target_hw=thw, token_budget=token_budget, degradations=ops)
+
+
+def sample_bucket_transform(
+    src_hw: tuple[int, int],
+    target_hw: tuple[int, int],
+    token_budget: int,
+    *,
+    rng: random.Random,
+    crop_scale: tuple[float, float] = (0.35, 1.0),
+    hflip_prob: float = 0.0,
+    degradations: Mapping[str, Any] | None = None,
+) -> TransformParams:
+    """Training transform onto a fixed output shape (shape-bucketed batches: no padding anywhere).
+
+    Takes the largest crop of the source with the bucket's aspect ratio ``W/H``, shrinks it to a
+    random area fraction ``crop_scale`` of that crop, places it uniformly at random, and resizes it to
+    ``target_hw`` (a processor output shape, see :func:`processor_shapes`) with the processor's
+    bicubic + antialias resize.
+    """
+    h, w = src_hw
+    th, tw = target_hw
+    if th % TOKEN_STRIDE or tw % TOKEN_STRIDE:
+        raise ValueError(f"target {target_hw} is not a multiple of {TOKEN_STRIDE}")
+    aspect = tw / th
+    ch_max, cw_max = (h, h * aspect) if w / h >= aspect else (w / aspect, w)
+    scale = math.sqrt(rng.uniform(*crop_scale))
+    ch = min(h, max(1, round(ch_max * scale)))
+    cw = min(w, max(1, round(cw_max * scale)))
+    crop_box = (rng.randint(0, h - ch), rng.randint(0, w - cw), ch, cw)
+    hflip = rng.random() < hflip_prob
+    ops = ()
+    if degradations:
+        from onboard_vlm.data.degrade import sample_degradations
+
+        ops = sample_degradations(degradations, rng, (th, tw))
+    return TransformParams(src_hw=(h, w), crop_box=crop_box, hflip=hflip, target_hw=(th, tw), token_budget=token_budget, degradations=ops)
 
 
 def apply_transform(image: torch.Tensor, params: TransformParams) -> torch.Tensor:

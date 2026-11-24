@@ -1,0 +1,15 @@
+# @package _global_
+# Baseline "off-the-shelf encoder + projector": the pretrained mobilenetv4_conv_m backbone is FROZEN (incl. BatchNorm
+# statistics); only the grid alignment / MLP projector into Gemma 4's token space is trained, with the same
+# data, budget mix, objective and compute as the distilled students. Tests whether distilling the encoder
+# beats adapting an existing efficient encoder (LLaVA-style alignment).
+experiment_name: baseline_projector_mobilenetv4_conv_m_e2b
+student:
+  freeze_backbone: true
+  head: mlp
+defaults:
+  - override /task: embedding_distillation
+  - override /criterion: embedding_tokens
+  - override /teacher: gemma4_e2b
+  - override /student: timm_mobilenetv4_conv_m
+  - override /data_module: general_vision

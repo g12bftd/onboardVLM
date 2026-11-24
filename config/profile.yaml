@@ -26,7 +26,7 @@ students:
   - timm_efficientformerv2_s1
   - timm_levit_128
   - timm_efficientvit_m4
-token_budgets: [140, 280, 560]
+token_budgets: [70, 140, 280, 560, 1120]   # every budget of the input domain (compute-matched comparisons)
 source_hw: [1080, 1440]           # camera frame (H, W) before Gemma's budget resize
 device: cpu
 dtype: float32

@@ -1,0 +1,45 @@
+# E2 frozen-feature probes (run_probe.py): identical protocol for every encoder.
+raw_root: ${oc.env:ONBOARD_VLM_RAW,./data/raw}
+eval_root: ${oc.env:ONBOARD_VLM_EVAL,./data/eval_sets}
+output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
+run_name: encoder
+encoder:
+  kind: gemma              # gemma (teacher / student) | timm | hf_vision
+  teacher: false           # gemma: probe the original Gemma 4 tower itself
+  student_dir: null        # gemma: an exported student
+  student: null            # gemma: or a student config (e.g. {name: gemma4_truncated, num_layers: 8})
+  budget: 280              # gemma: soft-token budget of the probed input (processor geometry)
+  model_name: null         # timm
+  input_size: null         # timm (default: the model's pretrained input size)
+  model_id: null           # hf_vision
+tasks: [imagenet, ade20k, nyuv2]
+device: cuda
+dtype: bfloat16
+batch_size: 32
+seed: 0
+bootstrap: {n_boot: 10000, seed: 0}
+imagenet:                  # timm/imagenet-1k-wds (gated) or an ImageFolder tree
+  format: wds
+  train_pattern: ${raw_root}/imagenet1k/imagenet1k-train-*.tar
+  val_pattern: ${raw_root}/eval_sets/imagenet1k_val/imagenet1k-validation-*.tar
+  train_root: null
+  val_root: null
+  train_per_class: 100     # 100k-image train subset (fixed: first 100 per class in shard order)
+  val_limit: null
+  knn_k: 20
+  linear_max_iter: 500     # full-batch L-BFGS logistic regression; L2 chosen on a held-out 10% of train
+ade20k:
+  root: ${raw_root}/eval_sets/ade20k_val/ADEChallengeData2016
+  train_limit: 5000
+  val_limit: null          # all 2,000 validation images
+  epochs: 10
+nyuv2:
+  root: ${eval_root}/nyuv2
+  epochs: 20
+output_dir: ${output_root}/probes/${run_name}
+defaults:
+  - _self_
+  - teacher: gemma4_e2b
+hydra:
+  run:
+    dir: ${output_root}/hydra/probe/${run_name}

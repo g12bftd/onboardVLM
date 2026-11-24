@@ -156,7 +156,10 @@ class TimmSpatialStudent(VisionStudent):
         fixed_input_size: Sequence[int] | None = None,
         resampler: dict | None = None,
         model_kwargs: dict | None = None,
+        freeze_backbone: bool = False,
     ):
+        """``freeze_backbone``: keep the pretrained backbone frozen (incl. BatchNorm statistics) and train
+        only the alignment / projection head - the "off-the-shelf encoder + projector" baseline."""
         super().__init__()
         import timm
 
@@ -203,6 +206,9 @@ class TimmSpatialStudent(VisionStudent):
                 raise ValueError(f"unknown head {head!r}")
             # stage s (stride r_s on the backbone input) is pooled by r_final / r_s onto the token grid
             self.layer_dims = {i: c for i, (c, r) in enumerate(zip(channels, reductions)) if self._pool_factor(r) is not None}
+        self.freeze_backbone = freeze_backbone
+        if freeze_backbone:
+            self.backbone.requires_grad_(False)
         self._verify_alignment()
         log.info("     student timm_spatial %s [%s%s] -> %s", model_name, alignment,
                  f", input x{self.scale:.3g}" if alignment == "input_rescale" else "", describe_module(self))
@@ -236,6 +242,12 @@ class TimmSpatialStudent(VisionStudent):
             x = F.interpolate(x, size=size, mode="area") if self.scale < 1 else F.interpolate(x, size=size, mode="bilinear", align_corners=False)
         feats = self._nchw(self.backbone(x))
         return self.downsample(feats[-1]), feats
+
+    def train(self, mode: bool = True) -> "TimmSpatialStudent":
+        super().train(mode)
+        if getattr(self, "freeze_backbone", False):
+            self.backbone.eval()  # frozen BatchNorm statistics
+        return self
 
     @torch.no_grad()
     def _verify_alignment(self) -> None:

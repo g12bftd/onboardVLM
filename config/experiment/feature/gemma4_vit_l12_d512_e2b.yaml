@@ -1,8 +1,6 @@
 # @package _global_
 # python -u run_distill.py +experiment=feature/gemma4_vit_l12_d512_e2b
 experiment_name: feature_gemma4_vit_l12_d512_e2b
-token_budgets: [140, 280, 560]   # the student is trained across Gemma budgets (budget-agnostic)
-batch_size: 32
 layer_map: {3: 4, 7: 9, 11: 15}   # student layer/stage -> teacher vision layer (0..15)
 defaults:
   - override /task: feature_distillation

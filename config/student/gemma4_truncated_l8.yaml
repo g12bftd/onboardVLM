@@ -1,0 +1,9 @@
+# Baseline: the original Gemma 4 vision tower cut to its first 8 of 16 layers (+ its own pooler).
+# trainable: false = zero-training baseline (evaluate with run_fidelity / run_eval student=...);
+# trainable: true  = initialisation for distillation (baselines/truncated_teacher_l8_*).
+name: gemma4_truncated
+num_layers: 8
+out_dim: ${deploy_vision_dim}
+model_id: ${teacher.model_id}
+revision: ${teacher.revision}
+trainable: true

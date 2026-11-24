@@ -13,6 +13,10 @@ Configuration, data and training follow TimeFM `cerebro_v2`:
 * LMDB datasets;
 * stage-by-stage real-time logging.
 
+**The experimental protocol** (claims and evidence, student contract, input domain, training,
+baselines, evaluation tiers, statistics, decontamination, ablations, run order) is in
+[docs/protocol.md](docs/protocol.md).
+
 ## The teacher
 
 `config/teacher/*.yaml` selects one of the four original checkpoints:
@@ -32,11 +36,18 @@ Configuration, data and training follow TimeFM `cerebro_v2`:
 
 ## Distillation types = tasks
 
-| `task=` | compares | loads | example |
-|---|---|---|---|
-| `feature_distillation` (default) | vision tokens (768-d) + optional intermediate layers | vision tower only (none with an offline cache) | `+experiment=feature/gemma4_vit_l8_d384_e2b` |
-| `embedding_distillation` | tokens after the checkpoint's frozen `embed_vision`: the exact space the LM reads | vision tower + `embed_vision` | `+experiment=embedding/gemma4_vit_l8_d384_e4b` |
-| `logit_distillation` | next-token logits of the VLM with the student grafted in vs the original VLM (answer-span KL) | full VLM; only the student trains | `+experiment=logit/gemma4_vit_l8_d384_e2b student_dir=<feature export>` |
+| `task=` | compares | loads | role | example |
+|---|---|---|---|---|
+| `embedding_distillation` (default) | tokens after the checkpoint's frozen `embed_vision`: exactly what the LM reads | vision tower + `embed_vision` | **main method** | `+experiment=embedding/gemma4_vit_l8_d384_e2b` |
+| `feature_distillation` | 768-d vision tokens (scale-invariant) + optional intermediate layers | vision tower only (none with an offline cache) | ablation | `+experiment=feature/gemma4_vit_l8_d384_e2b` |
+| `logit_distillation` | next-token distributions of the unchanged VLM, on the teacher's own responses | full VLM; only the student trains | optional stage 2 | `+experiment=logit/gemma4_vit_l8_d384_e2b` |
+
+Whatever the type, the student outputs the same thing: exactly one 768-d token per 48-px cell of
+the processor output, in Gemma's order, at every budget of the declared input domain. It is a
+drop-in vision tower for both E2B and E4B. Gemma 4's `embed_vision` normalises every token
+(scale-free RMSNorm), so the language model sees only token directions. All losses and the shared
+fidelity metrics (`fid_*`, also the checkpoint-selection criterion) are therefore invariant to the
+per-token scale.
 
 Each task is a class in `onboard_vlm/tasks/`, built TimeFM-style as `Task(hparams, **task_cfg)` from
 `config/task/<type>.yaml`. Experiments are grouped by type (`config/experiment/{feature,embedding,logit}/`).
@@ -76,17 +87,21 @@ onboard_vlm/
   tasks/     base_task.py feature_distillation.py embedding_distillation.py logit_distillation.py
   teachers/  gemma4.py feature_cache.py            # original Gemma 4 via from_pretrained + offline cache
   students/  gemma4_vit.py timm_spatial.py vit.py multiplexed_vit.py io.py
-  distill/   adapter.py losses.py
+  distill/   adapter.py losses.py fidelity.py      # shared, scale-invariant fidelity metrics
   data/      corpus.py datasets.py collator.py degrade.py hashing.py lmdb_io.py prompts.py samplers.py data_module.py
   vlm/       grafted.py                            # hot-swap vlm.model.vision_tower
   eval/      benchmarks.py runner.py metrics/      # official metrics, LLM judges, submissions
+             lmms_eval_model.py probes.py probe_data.py stats.py   # E3 bridge, E2 probes, bootstrap / paired tests
   utils/     logging.py callbacks.py profiler.py tiny.py
 config/      task/ criterion/ teacher/ student/ data_module/ trainer/ experiment/{feature,embedding,logit,sweeps,debug} benchmark/
 make_datasets/
   download/*.sh  lmdb/make_*.py                    # benchmarks -> LMDB
   download/corpus/*.sh  corpus/*.py  build_corpus.sh   # general-vision corpus -> LMDB
-run_distill.py  run_eval.py  run_cache_teacher.py  run_profile.py
-docs/  design.md  corpus.md  datasets.md  metrics.md
+  eval_sets/                                       # E1 / E3 evaluation image sets (fidelity + decontamination)
+run_distill.py  run_generate_targets.py            # training; teacher responses for logit distillation
+run_fidelity.py  run_probe.py  run_eval.py  run_lmms_eval.py  run_profile.py  run_cache_teacher.py
+scripts/  eval_general.sh  aggregate_results.py    # E3 general suite; paper tables with CIs
+docs/  protocol.md  design.md  corpus.md  datasets.md  metrics.md
 ```
 
 ## Install
@@ -106,23 +121,31 @@ python -u run_distill.py +experiment=debug/dryrun_feature        # offline: tiny
 ```
 
 ```bash
-python -u run_distill.py +experiment=feature/gemma4_vit_l8_d384_e2b
+python -u run_distill.py -m +experiment=embedding/gemma4_vit_l8_d384_e2b seed=0,1,2          # main method, 3 seeds
 ```
 
 ```bash
-python -u run_distill.py +experiment=feature/gemma4_vit_l8_d384_e2b teacher=gemma4_e4b student.num_hidden_layers=6 student.hidden_size=512
+python -u run_distill.py +experiment=embedding/gemma4_vit_l8_d384_e2b teacher=gemma4_e4b student.num_hidden_layers=6 student.hidden_size=512
 ```
 
 ```bash
-python -u run_distill.py +experiment=embedding/gemma4_vit_l8_d384_e2b
+python -u run_distill.py +experiment=feature/gemma4_vit_l8_d384_e2b                             # ablation
 ```
 
 ```bash
-python -u run_distill.py +experiment=logit/gemma4_vit_l8_d384_e2b student_dir=outputs/students/feature_gemma4_vit_l8_d384_e2b
+python -u run_generate_targets.py && python -u run_generate_targets.py split_name=val 'sources=${val_sources}'
 ```
 
 ```bash
-python -u run_distill.py -m +experiment=feature/gemma4_vit_l8_d384_e2b,embedding/gemma4_vit_l8_d384_e2b data_module=general_vision_lite
+python -u run_distill.py -m +experiment=logit/gemma4_vit_l8_d384_e2b seed=0,1,2               # stage 2 from the embedding export
+```
+
+```bash
+python -u run_distill.py +experiment=baselines/projector_mobileclip2_mci2_e2b                   # same data and compute
+```
+
+```bash
+python -u run_fidelity.py student_dir=outputs/students/embedding_gemma4_vit_l8_d384_e2b_s0 run_name=g4vit_s0   # E1
 ```
 
 ```bash
@@ -134,11 +157,21 @@ python -u run_distill.py -m +experiment=sweeps/corpus_mixture
 ```
 
 ```bash
-python run_eval.py -m benchmark=vizwiz_vqa,textvqa,wearvqa,egoblind,egotextvqa_outdoor_high,egotextvqa_outdoor_low,egotextvqa_indoor,egoschema_subset,cvbench student_dir=outputs/students/feature_gemma4_vit_l8_d384_e2b run_name=g4vit_s
+python run_eval.py -m benchmark=vizwiz_vqa,textvqa,wearvqa,egoblind,egotextvqa_outdoor_high,egotextvqa_outdoor_low,egotextvqa_indoor,egoschema_subset,cvbench student_dir=outputs/students/embedding_gemma4_vit_l8_d384_e2b_s0 run_name=g4vit_s0
 ```
 
-The sixth command compares the feature and embedding types under identical settings. The last one
-evaluates an exported student on all benchmarks.
+```bash
+bash scripts/eval_general.sh g4vit_s0 outputs/students/embedding_gemma4_vit_l8_d384_e2b_s0      # E3 general suite (lmms-eval)
+```
+
+The last two commands evaluate an exported student on the target benchmarks and on the general
+lmms-eval suite. `scripts/aggregate_results.py` turns all outputs into tables with bootstrap CIs and
+paired tests against the teacher.
+
+Training batches hold one budget and one processor shape each (no padding) and about
+`tokens_per_batch` soft tokens. Every budget of `input_domain` is trained, with exact compute shares
+(`train_budgets`, `train_budget_weights`). Validation runs per group at `val_budgets`; the test split
+runs once at every budget.
 
 Hydra merges dicts, so replace one with `~layer_map '+layer_map={1: 2}'`. Writing `layer_map={...}`
 only adds keys.
@@ -207,7 +240,7 @@ RAW_ROOT=/data/raw LMDB_ROOT=/data/lmdb CORPUS_ROOT=/data/corpus WORKERS=32 bash
 pytest
 ```
 
-227 tests, CPU-only and offline (tiny random Gemma 4). They cover:
+255 tests, CPU-only and offline (tiny random Gemma 4). They cover:
 
 * geometry parity with `Gemma4ImageProcessor`;
 * teacher/student shape parity for every family;
@@ -218,4 +251,13 @@ pytest
 * real-time logging;
 * the corpus pipeline: filters, decontamination by content / id / video, global de-duplication,
   content-hashed train / val / test splits, leak checks, per-group metrics and the mixture sampler;
+* the protocol:
+  * exact input-domain enumeration and student coverage;
+  * shape-exact, token-balanced batches with exact budget shares across DDP ranks;
+  * scale-invariant fidelity metrics;
+  * the truncated-teacher and frozen-projector baselines;
+  * teacher-generated logit targets;
+  * E1 end to end;
+  * bootstrap, paired and McNemar statistics, and table aggregation;
+  * blocklisting of the evaluation image sets;
 * every YAML preset and experiment, plus grafted `generate()` for images and video.

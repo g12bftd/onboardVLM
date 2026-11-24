@@ -53,6 +53,12 @@ The logit task and evaluation use the official processor for text, fed the trans
 | `gemma4_vit` | transformers' own `Gemma4VisionModel`, built from a smaller `Gemma4VisionConfig` (depth, width, heads, head dim, MLP size, position table, clamps), randomly initialised by transformers. A linear head maps `hidden_size` to 768. | the teacher's patch sequence, as-is; dense images also accepted |
 | `timm_spatial` | any timm CNN / hybrid / efficient ViT on the exact 48-px token grid (see below) | dense images |
 | `compact_vit`, `coarse_patch_vit`, `multiplexed_vit` | from-scratch ViTs (2D-RoPE, MiniViT weight sharing) | dense images |
+| `gemma4_truncated` (baseline) | the original tower cut to its first *k* layers + its own pooler; zero-training baseline or initialisation | the teacher's patch sequence |
+
+Any `timm_spatial` student can freeze its pretrained backbone (`freeze_backbone: true`, BatchNorm
+statistics included) so only the grid-alignment / projection head trains: the "off-the-shelf
+encoder + projector" baseline. Students with learned position tables must cover the declared
+input domain (`check_student_covers`); see [protocol.md](protocol.md#3-input-domain).
 
 ### Putting a CNN on Gemma's token grid
 
@@ -114,12 +120,22 @@ they share:
 
 | task (`config/task/`) | what is compared | what is loaded | criterion configs |
 |---|---|---|---|
-| `feature_distillation` (default) | student vs teacher **vision tokens** (768-d) and optional intermediate layers | vision tower only (or nothing, with an offline teacher cache) | `feature_tokens`, `feature_tokens_relational`, `feature_full` |
-| `embedding_distillation` | both token sets after the checkpoint's **frozen `embed_vision`**: the exact LM input space (1536-d / 2560-d) | vision tower + `embed_vision`; never the LM | `embedding_tokens`, `embedding_tokens_relational` (+ `task.vision_criterion` for vision-space terms) |
-| `logit_distillation` | **next-token logits** of the VLM with the student grafted in, vs the same VLM with its own tower; KL on answer spans | the full VLM; only the student trains, so the VLM stays byte-identical (tested) | `logit_kd` |
+| `embedding_distillation` (**default, main method**) | both token sets after the checkpoint's **frozen `embed_vision`**: the exact LM input space (1536-d / 2560-d) | vision tower + `embed_vision`; never the LM | `embedding_tokens`, `embedding_tokens_relational` (+ `task.vision_criterion` for vision-space terms) |
+| `feature_distillation` (ablation) | student vs teacher **vision tokens** (768-d, RMS-normalised) and optional intermediate layers | vision tower only (or nothing, with an offline teacher cache) | `feature_tokens`, `feature_tokens_relational`, `feature_full` |
+| `logit_distillation` (stage 2) | **next-token distributions** of the VLM with the student grafted in, vs the same VLM with its own tower; KL on the teacher's own responses (`run_generate_targets.py`) | the full VLM; only the student trains, so the VLM stays byte-identical (tested) | `logit_kd` |
 
-The logit task usually starts from a feature or embedding export (`student_dir=...`). Unfreezing
-`embed_vision` (full / LoRA) is an ablation.
+The logit task starts from the embedding export of the same seed. Distilling on human reference
+answers (`data_module=vqa_train`) and unfreezing `embed_vision` (full / LoRA) are ablations.
+
+**Uniform evaluation across types.** Every task logs the same scale-invariant fidelity metrics on
+val / test (`onboard_vlm/distill/fidelity.py`):
+
+* `fid_lm_cos` and `fid_lm_rel_err` in the LM input space;
+* `fid_vis_cos`, `fid_vis_cos_p05` and `fid_cka` in the vision space.
+
+They are reported per (group, budget), per group, per budget and overall. Checkpoints of all three
+types are selected on the same criterion, `val/fid_lm_cos`. The logit task also reports
+`kd_top1_agree`.
 
 ## 6. Real-time logging
 
@@ -146,11 +162,21 @@ The logit task usually starts from a feature or embedding export (`student_dir=.
   * on exceptions.
 * `run_cache_teacher.py`, `run_eval.py` and `run_profile.py` use the same stages.
 
-## 7. Reproducibility
+## 7. Batching
+
+Training uses one budget and one processor shape per batch (`BucketedBatchSampler`), with about
+`tokens_per_batch` soft tokens and exact per-budget shares of batches. Evaluation uses one dataloader
+per (group, budget), batched by exact processor shape (`ExactShapeBatchSampler`). No batch ever
+contains padding, so CNN students behave at training exactly as at batch-1 deployment. All samplers
+shard across DDP ranks themselves (`use_distributed_sampler: false`). Full rationale:
+[protocol.md](protocol.md#4-training).
+
+## 8. Reproducibility
 
 * Pinned default checkpoint commits (`config/teacher/*.yaml`, `SUPPORTED_TEACHERS`).
 * Every random augmentation is stored in `TransformParams`, so cache replay is exact.
 * The corpus mixture sampler is deterministic given seed + epoch, and identical on all ranks.
 * Corpus splits are a seeded content hash, so they are reproducible and stable across corpus sizes.
 * The finalized corpus is identified by a digest (`docs/corpus.md`).
-* The Hydra config is saved with every run and logged at start-up.
+* The Hydra config is saved with every run and logged at start-up; `run_id = <experiment>_s<seed>`
+  separates seeds; `train_summary.json` records the training compute of every run.

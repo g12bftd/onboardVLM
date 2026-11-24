@@ -2,6 +2,7 @@
 # The vision tower is identical in E2B / E4B / base / -it; the choice selects embed_vision (embedding
 # distillation: 1536-d for E2B, 2560-d for E4B) and the VLM used by logit distillation and evaluation.
 name: gemma4
+key: e2b_base               # short id used in output paths (e.g. teacher-response caches)
 model_id: google/gemma-4-E2B
 revision: 433813a669639fd7eaa83155828e9000ed357d53   # pinned commit for reproducibility ("main" = latest)
 load: vision             # set by the task: vision (feature / embedding) | vlm (logit)

@@ -4,12 +4,14 @@ output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
 
 vlm_id: google/gemma-4-E2B-it     # deployment VLM
 student_dir: null                  # null = teacher baseline (original Gemma vision tower)
+student: null                      # or a student config, e.g. {name: gemma4_truncated, num_layers: 8} (zero-training baseline)
 run_name: teacher                  # output label; set e.g. run_name=cvit_s when evaluating a student
 dtype: bfloat16
 device: cuda
 batch_size: 8
 num_workers: 4
 image_token_budget: 280            # soft tokens per image
+input_domain: {budgets: [70, 140, 280, 560, 1120], max_aspect: 4.0}   # students are claimed on this domain; outside inputs are counted
 video_token_budget: 70             # soft tokens per frame (Gemma 4 video default)
 max_new_tokens: null               # null = benchmark default
 answerability_scoring: true        # VizWiz: 1 - p("Unanswerable" | prompt)

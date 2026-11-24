@@ -1,8 +1,13 @@
-"""Lightning callback that reports training progress in real time through the pipeline logger."""
+"""Lightning callback that reports training progress in real time through the pipeline logger, and
+records the training compute of every run (``train_summary.json``: images and soft tokens seen per
+budget, optimizer steps, wall-clock and device-hours), so methods can be compared at equal compute."""
 
 from __future__ import annotations
 
+import json
+import os
 import time
+from collections import Counter
 from typing import Any
 
 import pytorch_lightning as pl
@@ -25,6 +30,7 @@ class PipelineLoggingCallback(pl.Callback):
         self.every_n_steps = max(1, int(every_n_steps))
         self._t_fit = self._t_window = 0.0
         self._images = 0
+        self.totals: dict[str, Any] = {"images": 0, "soft_tokens": 0, "images_by_budget": Counter(), "tokens_by_budget": Counter()}
 
     # -- fit ------------------------------------------------------------------------------
     def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
@@ -46,6 +52,14 @@ class PipelineLoggingCallback(pl.Callback):
     def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs: Any, batch: Any, batch_idx: int) -> None:
         try:
             self._images += len(batch)
+            w = trainer.world_size
+            n_tok = sum(getattr(batch, "image_token_lengths", []) or [])
+            budget = batch.transforms[0].token_budget if getattr(batch, "transforms", None) else None
+            self.totals["images"] += len(batch) * w
+            self.totals["soft_tokens"] += n_tok * w
+            if budget is not None:
+                self.totals["images_by_budget"][budget] += len(batch) * w
+                self.totals["tokens_by_budget"][budget] += n_tok * w
         except TypeError:
             pass
         step = trainer.global_step
@@ -92,7 +106,22 @@ class PipelineLoggingCallback(pl.Callback):
         log.info("     saving checkpoint at step %d -> %s", trainer.global_step, where)
 
     def on_fit_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        log.info("<=== Training finished in %s (%d steps) | %s", _hms(time.perf_counter() - self._t_fit), trainer.global_step, memory_summary())
+        wall = time.perf_counter() - self._t_fit
+        log.info("<=== Training finished in %s (%d steps) | %s", _hms(wall), trainer.global_step, memory_summary())
+        if trainer.is_global_zero:
+            summary = {
+                "optimizer_steps": trainer.global_step, "wall_clock_s": round(wall, 1),
+                "accelerator": type(trainer.accelerator).__name__, "devices": trainer.num_devices * trainer.num_nodes,
+                "device_hours": round(wall * trainer.num_devices * trainer.num_nodes / 3600, 3),
+                "images_seen": self.totals["images"], "soft_tokens_seen": self.totals["soft_tokens"],
+                "images_by_budget": dict(self.totals["images_by_budget"]), "tokens_by_budget": dict(self.totals["tokens_by_budget"]),
+            }
+            path = os.path.join(trainer.log_dir or trainer.default_root_dir, "train_summary.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(summary, f, indent=1)
+            log.info("     compute: %s images, %s soft tokens, %.2f device-hours (%s) -> %s", f"{summary['images_seen']:,}",
+                     f"{summary['soft_tokens_seen']:,}", summary["device_hours"], summary["accelerator"], path)
 
     def on_exception(self, trainer: pl.Trainer, pl_module: pl.LightningModule, exception: BaseException) -> None:
         log.error("!!!! training stopped by %s: %s", type(exception).__name__, exception)

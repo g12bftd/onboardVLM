@@ -7,9 +7,12 @@ val:                      # two groups -> per-group metrics val/a/..., val/b/...
   - {name: synthetic, num_samples: 8, seed: 2, group: b}
 test:
   - {name: synthetic, num_samples: 8, seed: 3, group: a}
-collator: {token_budgets: "${token_budgets}", train: true}
-val_collator: {token_budgets: [70], train: false}
-batch_size: ${batch_size}
+input_domain: ${input_domain}
+sampling: {mode: crop, budgets: "${train_budgets}", tokens_per_batch: "${tokens_per_batch}"}
+evaluation: {val_budgets: "${val_budgets}", test_budgets: "${test_budgets}", tokens_per_batch: "${tokens_per_batch}"}
+samples_per_epoch: 64
+collator: {train: true}
+val_collator: {train: false}
 num_workers: 0
 pin_memory: false
 seed: ${seed}

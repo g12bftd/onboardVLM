@@ -5,15 +5,15 @@
 #   one component off          data_module.mixture.ego4d=0
 #   one group off              data_module.drop_groups=[egocentric]       (sweep: +experiment=sweeps/corpus_mixture)
 #   different weights          data_module.mixture.cc12m=0.4 data_module.mixture.imagenet21k=0.05
-#   bigger / other val split   data_module.dataset_defaults.image_corpus.val_fraction=0.005
-#   re-drawn splits            data_module.dataset_defaults.image_corpus.split_seed=1
+#   bigger / other val split   corpus_split.val_fraction=0.005
+#   re-drawn splits            corpus_split.split_seed=1
 _target_: onboard_vlm.data.data_module.DistillDataModule
 
 # Applied to every image_corpus entry (train / val / test alike), so all of them agree on the split.
 # Splits are a seeded hash of each image's fingerprint: duplicates share a split, the lite corpus is a
 # consistent subset of the full one, and changing them needs no rebuild.
 dataset_defaults:
-  image_corpus: {val_fraction: 0.002, test_fraction: 0.002, split_seed: 0, require_finalized: true}
+  image_corpus: {val_fraction: "${corpus_split.val_fraction}", test_fraction: "${corpus_split.test_fraction}", split_seed: "${corpus_split.split_seed}", require_finalized: true}
 
 mixture:                 # sampling probability per component (sums to 1; renormalised if not)
   cc12m: 0.25            # web, open-vocabulary                       ~10.9M
@@ -40,7 +40,7 @@ train:
   - {name: image_corpus, root: "${corpus_root}/egocentric/epic_kitchens", group: egocentric, weight: "${data_module.mixture.epic_kitchens}"}
   - {name: target_train, data_root: "${data_root}", group: target, weight: "${data_module.mixture.target}"}
 
-# Model selection (val_loss = image-weighted mean over all groups) and per-group monitoring
+# Model selection (selection_metric = val/fid_lm_cos, image-weighted over all groups and budgets) and per-group monitoring
 # (val/<group>/token_cos, ...). `limit` keeps an evenly spaced subset of each source's val split.
 val:
   - {name: image_corpus, split: val, limit: 1000, group: web, root: "${corpus_root}/cc12m"}
@@ -59,9 +59,19 @@ test:
   - {name: image_corpus, split: test, limit: 5000, group: text_rich, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}
   - {name: image_corpus, split: test, limit: 5000, group: egocentric, root: ["${corpus_root}/egocentric/ego4d", "${corpus_root}/egocentric/epic_kitchens"]}
 
+# Batching protocol (docs/protocol.md): one budget + one processor shape per batch, ~tokens_per_batch
+# soft tokens per batch, no padding; every budget and aspect ratio of the input domain is trained.
+input_domain: ${input_domain}
+sampling:
+  mode: crop                                   # random crops onto the batch's aspect / shape
+  budgets: ${train_budgets}
+  budget_weights: ${train_budget_weights}      # share of batches (= compute) per budget
+  tokens_per_batch: ${tokens_per_batch}
+  camera_aspects: [1.3333, 0.75, 1.7778, 0.5625]   # 4:3 / 16:9 glasses cameras, both orientations
+  camera_prob: 0.5                             # else log-uniform aspect in [1/max_aspect, max_aspect]
+evaluation: {val_budgets: "${val_budgets}", test_budgets: "${test_budgets}", tokens_per_batch: "${tokens_per_batch}", filter_domain: true}
 samples_per_epoch: 2000000
-collator: {token_budgets: "${token_budgets}", train: true, crop_scale: [0.5, 1.0], crop_ratio: [0.75, 1.3333], hflip_prob: 0.0}
-val_collator: {token_budgets: [280], train: false}
-batch_size: ${batch_size}
+collator: {train: true, crop_scale: [0.35, 1.0], hflip_prob: 0.0}   # crop area relative to the largest crop of the batch aspect
+val_collator: {train: false}                                         # full images, bit-exact processor geometry
 num_workers: ${num_workers}
 seed: ${seed}

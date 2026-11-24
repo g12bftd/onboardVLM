@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import random
 from collections import defaultdict
-from typing import Iterator, Sequence
+from typing import Any, Iterator, Sequence
 
 import torch.distributed as dist
 from torch.utils.data import Sampler
@@ -97,7 +97,8 @@ class MixtureSampler(Sampler[int]):
         seed: base seed.
     """
 
-    def __init__(self, lengths: Sequence[int], weights: Sequence[float], num_samples: int, seed: int = 0):
+    def __init__(self, lengths: Sequence[int], weights: Sequence[float], num_samples: int, seed: int = 0, shard: bool = False,
+                 num_replicas: int | None = None, rank: int | None = None):
         if len(lengths) != len(weights):
             raise ValueError(f"{len(weights)} weights for {len(lengths)} datasets")
         if any(w < 0 for w in weights) or sum(weights) <= 0:
@@ -112,6 +113,8 @@ class MixtureSampler(Sampler[int]):
         for n in self.lengths[:-1]:
             self.offsets.append(self.offsets[-1] + n)
         self.num_samples, self.seed, self.epoch = int(num_samples), seed, 0
+        # shard=True: this sampler splits the epoch across DDP ranks itself (trainer use_distributed_sampler=false)
+        self.num_replicas, self.rank = _dist_info(num_replicas, rank) if shard else (1, 0)
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -135,7 +138,257 @@ class MixtureSampler(Sampler[int]):
             idx = torch.randperm(n, generator=g)[:c] if c <= n else torch.randint(n, (c,), generator=g)
             parts.append(idx + off)
         out = torch.cat(parts)[torch.randperm(self.num_samples, generator=g)]
-        return iter(out.tolist())
+        per_rank = self.num_samples // self.num_replicas
+        return iter(out[self.rank * per_rank : (self.rank + 1) * per_rank].tolist())
 
     def __len__(self) -> int:
-        return self.num_samples
+        return self.num_samples // self.num_replicas
+
+
+# ----------------------------------------------------------------------------------------------
+# Shape-exact batching: every batch holds images of ONE processor output shape (no padding at all)
+# ----------------------------------------------------------------------------------------------
+def _dist_info(num_replicas: int | None, rank: int | None) -> tuple[int, int]:
+    if num_replicas is None:
+        num_replicas = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+    if rank is None:
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+    return num_replicas, rank
+
+
+def batch_size_for(shape: tuple[int, int], tokens_per_batch: int) -> int:
+    """Token-balanced batch size: ~``tokens_per_batch`` soft tokens per batch whatever the budget."""
+    from onboard_vlm.interfaces import TOKEN_STRIDE
+
+    return max(1, tokens_per_batch // ((shape[0] // TOKEN_STRIDE) * (shape[1] // TOKEN_STRIDE)))
+
+
+class BucketedBatchSampler(Sampler[list[tuple]]):
+    """Training batches for feature / embedding distillation.
+
+    Every batch has one token budget, one output shape (a processor output shape, see
+    :func:`onboard_vlm.geometry.processor_shapes`) and ~``tokens_per_batch`` soft tokens:
+
+    * budget ~ ``budget_weights`` (with token-balanced batches, the weights are the share of
+      *compute* per budget; uniform weights give every budget the same gradient signal);
+    * aspect ratio W/H: with probability ``camera_prob`` one of ``camera_aspects`` (the deployment
+      cameras), otherwise log-uniform in ``[1/max_aspect, max_aspect]``;
+    * images: drawn from the dataset mixture (``weights``), uniformly without replacement within a
+      component; each is random-resized-cropped to the batch's aspect by the collator.
+
+    Students therefore never see padding during training (identical to batch-1 deployment) and every
+    budget / aspect of the input domain is trained. The plan is a function of ``seed`` + epoch only:
+    all DDP ranks build the same global plan and take every ``num_replicas``-th batch.
+
+    Yields lists of ``("crop", index, budget, H, W)``.
+    """
+
+    def __init__(
+        self,
+        lengths: Sequence[int],
+        weights: Sequence[float] | None,
+        budgets: Sequence[int],
+        tokens_per_batch: int,
+        samples_per_epoch: int,
+        budget_weights: Sequence[float] | None = None,
+        max_aspect: float = 4.0,
+        camera_aspects: Sequence[float] = (4 / 3, 3 / 4, 16 / 9, 9 / 16),
+        camera_prob: float = 0.5,
+        seed: int = 0,
+        num_replicas: int | None = None,
+        rank: int | None = None,
+    ):
+        import numpy as np
+
+        self.lengths = [int(n) for n in lengths]
+        w = np.asarray(weights if weights is not None else self.lengths, dtype=np.float64)
+        if len(w) != len(self.lengths) or (w < 0).any() or w.sum() <= 0:
+            raise ValueError(f"bad mixture weights {list(w)} for {len(self.lengths)} datasets")
+        if any(n == 0 and p > 0 for n, p in zip(self.lengths, w)):
+            raise ValueError("a dataset with positive weight is empty")
+        self.probs = w / w.sum()
+        self.offsets = np.concatenate([[0], np.cumsum(self.lengths)[:-1]]).astype(np.int64)
+        self.budgets = [int(b) for b in budgets]
+        bw = np.asarray(budget_weights if budget_weights is not None else [1.0] * len(self.budgets), dtype=np.float64)
+        if len(bw) != len(self.budgets) or (bw < 0).any() or bw.sum() <= 0:
+            raise ValueError(f"bad budget_weights {list(bw)} for budgets {self.budgets}")
+        self.budget_probs = bw / bw.sum()
+        if not all(1 / max_aspect <= a <= max_aspect for a in camera_aspects):
+            raise ValueError(f"camera_aspects {list(camera_aspects)} outside the domain [1/{max_aspect}, {max_aspect}]")
+        self.tokens_per_batch, self.samples_per_epoch = int(tokens_per_batch), int(samples_per_epoch)
+        self.max_aspect, self.camera_aspects, self.camera_prob = float(max_aspect), [float(a) for a in camera_aspects], float(camera_prob)
+        self.seed, self.epoch = seed, 0
+        self.num_replicas, self.rank = _dist_info(num_replicas, rank)
+        self._plans: dict[int, list[tuple[int, int, int, int]]] = {}
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def _rng(self, salt: int):
+        import numpy as np
+
+        return np.random.default_rng([self.seed, self.epoch, salt])
+
+    def _aspect(self, rng) -> float:
+        import math
+
+        if rng.random() < self.camera_prob:
+            return self.camera_aspects[rng.integers(len(self.camera_aspects))]
+        return math.exp(rng.uniform(-math.log(self.max_aspect), math.log(self.max_aspect)))
+
+    def expected_batch_size(self) -> dict[int, float]:
+        """Mean images per batch for every budget under the aspect distribution (fixed-seed estimate)."""
+        import numpy as np
+
+        from onboard_vlm.geometry import shape_for_aspect
+
+        rng = np.random.default_rng([self.seed, 2**31 - 1])
+        aspects = [self._aspect(rng) for _ in range(2000)]
+        return {b: float(np.mean([batch_size_for(shape_for_aspect(a, b), self.tokens_per_batch) for a in aspects])) for b in self.budgets}
+
+    def num_batches(self) -> int:
+        """Global batches per epoch: enough for ~``samples_per_epoch`` images at the budget mix, rounded
+        down to a multiple of the number of ranks."""
+        import math
+
+        ebs = self.expected_batch_size()
+        mean_bs = sum(p * ebs[b] for b, p in zip(self.budgets, self.budget_probs))
+        n = max(self.num_replicas, math.ceil(self.samples_per_epoch / mean_bs))
+        return n // self.num_replicas * self.num_replicas
+
+    def plan(self) -> list[tuple[int, int, int, int]]:
+        """Global ``(budget, H, W, batch_size)`` list of this epoch (identical on all ranks).
+
+        Budgets are allocated *exactly* in proportion to ``budget_weights`` (largest-remainder
+        rounding, then shuffled): the share of batches, and hence of compute, per budget is fixed
+        rather than sampled, and does not depend on when the epoch ends.
+        """
+        import numpy as np
+
+        from onboard_vlm.geometry import shape_for_aspect
+
+        if self.epoch in self._plans:
+            return self._plans[self.epoch]
+        rng = self._rng(0)
+        n = self.num_batches()
+        quota = self.budget_probs * n
+        counts = np.floor(quota).astype(int)
+        for k in np.argsort(-(quota - counts))[: n - counts.sum()]:
+            counts[k] += 1
+        budgets = np.repeat(self.budgets, counts)[rng.permutation(n)]
+        out = []
+        for b in budgets:
+            h, w = shape_for_aspect(self._aspect(rng), int(b))
+            out.append((int(b), h, w, batch_size_for((h, w), self.tokens_per_batch)))
+        self._plans = {self.epoch: out}
+        return out
+
+    def __iter__(self) -> Iterator[list[tuple]]:
+        import numpy as np
+
+        plan = self.plan()
+        rng = self._rng(1)
+        perms: dict[int, np.ndarray] = {}
+        cursor: dict[int, int] = {}
+
+        def take(c: int, n: int) -> np.ndarray:
+            got = []
+            while n > 0:
+                if c not in perms or cursor[c] >= len(perms[c]):
+                    perms[c], cursor[c] = rng.permutation(self.lengths[c]), 0
+                k = min(n, len(perms[c]) - cursor[c])
+                got.append(perms[c][cursor[c] : cursor[c] + k])
+                cursor[c] += k
+                n -= k
+            return np.concatenate(got) + self.offsets[c]
+
+        for j, (b, h, w, bs) in enumerate(plan):
+            comps = rng.choice(len(self.lengths), size=bs, p=self.probs)
+            idx = np.empty(bs, dtype=np.int64)
+            for c in np.unique(comps):
+                sel = comps == c
+                idx[sel] = take(int(c), int(sel.sum()))
+            if j % self.num_replicas == self.rank:  # every rank draws the whole plan, keeps its share
+                yield [("crop", int(i), b, h, w) for i in idx]
+
+    def __len__(self) -> int:
+        return len(self.plan()) // self.num_replicas
+
+
+class ExactShapeBatchSampler(Sampler[list[tuple]]):
+    """Batches of full images whose processor output shape is identical (evaluation, and training on
+    full images, e.g. logit distillation where the prompt refers to the whole image).
+
+    Each image gets one budget per epoch (``budgets`` / ``budget_weights``; evaluation uses a single
+    budget), is grouped with images of the same output shape, and batched with ~``tokens_per_batch``
+    soft tokens. Images outside ``domain`` are excluded and counted in ``excluded``.
+
+    Yields lists of ``("full", index, budget, H, W)``.
+    """
+
+    def __init__(
+        self,
+        sizes: Sequence[tuple[int, int]],
+        budgets: Sequence[int],
+        tokens_per_batch: int,
+        budget_weights: Sequence[float] | None = None,
+        shuffle: bool = False,
+        domain: Any = None,
+        seed: int = 0,
+        num_replicas: int | None = None,
+        rank: int | None = None,
+        drop_uneven: bool | None = None,
+    ):
+        import numpy as np
+
+        from onboard_vlm.geometry import target_size
+
+        self.budgets = [int(b) for b in budgets]
+        bw = np.asarray(budget_weights if budget_weights is not None else [1.0] * len(self.budgets), dtype=np.float64)
+        self.budget_probs = bw / bw.sum()
+        self.tokens_per_batch, self.shuffle, self.seed, self.epoch = int(tokens_per_batch), shuffle, seed, 0
+        self.num_replicas, self.rank = _dist_info(num_replicas, rank)
+        self.drop_uneven = shuffle if drop_uneven is None else drop_uneven  # training needs equal #batches per rank
+        self.shapes: dict[int, list] = {}
+        self.excluded: dict[int, int] = {}
+        for b in self.budgets:
+            shp = [target_size(int(h), int(w), b) for h, w in sizes]
+            if domain is not None:
+                ok = [domain.contains(*s) for s in shp]
+                self.excluded[b] = len(ok) - sum(ok)
+                shp = [s if k else None for s, k in zip(shp, ok)]
+            self.shapes[b] = shp
+        self.n = len(sizes)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def _batches(self) -> list[list[tuple]]:
+        import numpy as np
+
+        rng = np.random.default_rng([self.seed, self.epoch])
+        assign = (rng.choice(len(self.budgets), size=self.n, p=self.budget_probs) if len(self.budgets) > 1
+                  else np.zeros(self.n, dtype=np.int64))
+        groups: dict[tuple[int, int, int], list[int]] = {}
+        for i in range(self.n):
+            b = self.budgets[assign[i]]
+            s = self.shapes[b][i]
+            if s is not None:
+                groups.setdefault((b, *s), []).append(i)
+        batches = []
+        for (b, h, w), idx in sorted(groups.items()):
+            if self.shuffle:
+                idx = list(rng.permutation(idx))
+            bs = batch_size_for((h, w), self.tokens_per_batch)
+            batches += [[("full", int(i), b, h, w) for i in idx[k : k + bs]] for k in range(0, len(idx), bs)]
+        if self.shuffle:
+            batches = [batches[k] for k in rng.permutation(len(batches))]
+        if self.drop_uneven:
+            batches = batches[: len(batches) // self.num_replicas * self.num_replicas]
+        return batches[self.rank :: self.num_replicas]
+
+    def __iter__(self) -> Iterator[list[tuple]]:
+        return iter(self._batches())
+
+    def __len__(self) -> int:
+        return len(self._batches())
