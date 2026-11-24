@@ -69,9 +69,9 @@ conda create -y --name onboardvlm-lmms --clone onboardvlm && conda run -n onboar
 |---|---|---|
 | Hugging Face token | ImageNet-1k (gated, auto-approved), downloads | accept the terms on huggingface.co/datasets/timm/imagenet-1k-wds, then `hf auth login` (the token is stored in `$HF_HOME`, where the jobs find it) |
 | Kaggle API token | EgoSchema videos | token from Kaggle → Settings → API, saved as `~/.kaggle/access_token` (chmod 600; a legacy `kaggle.json` also works); accept the `egoschema-public` competition rules |
-| Ego4D licence | Ego4D frames | sign at ego4d-data.org (approval takes days); `aws configure --profile ego4d` with the keys you receive |
+| Ego4D licence | Ego4D frames | sign at ego4d-data.org (approval takes ~2 days); the email contains an AWS access key ID + secret key for the Ego4D S3 buckets (no AWS account needed). `aws configure --profile ego4d` (leave the region blank). The keys **expire 14 days after approval**: re-sign with the same email to reactivate them if `dl-ego4d` runs later |
 | SA-1B licence | SA-1B | accept at ai.meta.com/datasets/segment-anything-downloads; save the link file as `$RAW_ROOT/sa1b/sa1b_links.txt` |
-| OpenAI-compatible key | LLM judges of EgoBlind / EgoTextVQA / WearVQA (evaluation only) | `export OPENAI_API_KEY=...` |
+| OpenAI API key | evaluation only: LLM judges of EgoBlind, EgoTextVQA, WearVQA (`run_eval.py`) and of MMBench, HallusionBench (lmms-eval) | platform.openai.com API account with billing (separate from ChatGPT); store the key in `~/.config/onboardvlm/secrets.sh` (chmod 600) and `source` it before submitting evaluation jobs. Without it, the judged metrics are skipped and only proxy metrics are reported |
 
 ## 4. Data: every download and processing step as batch jobs
 
