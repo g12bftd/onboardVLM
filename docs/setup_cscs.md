@@ -71,12 +71,12 @@ conda create -y --name onboardvlm-lmms --clone onboardvlm && conda run -n onboar
 | Kaggle API token | EgoSchema videos | token from Kaggle → Settings → API, saved as `~/.kaggle/access_token` (chmod 600; a legacy `kaggle.json` also works); accept the `egoschema-public` competition rules |
 | Ego4D licence | Ego4D frames | sign at ego4d-data.org (approval takes ~2 days); the email contains an AWS access key ID + secret key for the Ego4D S3 buckets (no AWS account needed). `aws configure --profile ego4d` (leave the region blank). The keys **expire 14 days after approval**: re-sign with the same email to reactivate them if `dl-ego4d` runs later |
 | SA-1B licence | SA-1B | accept at ai.meta.com/datasets/segment-anything-downloads; save the link file as `$RAW_ROOT/sa1b/sa1b_links.txt` |
-| OpenAI API key | evaluation only: LLM judges of EgoBlind, EgoTextVQA, WearVQA (`run_eval.py`) and of MMBench, HallusionBench (lmms-eval) | platform.openai.com API account with billing (separate from ChatGPT); store the key in `~/.config/onboardvlm/secrets.sh` (chmod 600) and `source` it before submitting evaluation jobs. Without it, the judged metrics are skipped and only proxy metrics are reported |
+| OpenAI API key (optional) | not needed for any data step. Only the LLM-judged evaluation scores use it: EgoBlind, EgoTextVQA, WearVQA (`run_eval.py`) and MMBench, HallusionBench (lmms-eval) | platform.openai.com API account with billing (separate from ChatGPT); store the key in `~/.config/onboardvlm/secrets.sh` (chmod 600) and `source` it before submitting evaluation jobs. Without it, the judged scores are skipped and only the rule-based metrics are reported |
 
 ## 4. Data: every download and processing step as batch jobs
 
 ```bash
-cd /users/$USER/repos/onboardvlm && conda activate onboardvlm && source scripts/paths.sh
+cd /users/$USER/repos/onboardvlm && git pull && conda activate onboardvlm && source scripts/paths.sh
 bash scripts/slurm/submit_data_pipeline.sh --account <project> --dry-run      # prints the job graph
 bash scripts/slurm/submit_data_pipeline.sh --account <project>
 ```
@@ -100,21 +100,30 @@ The script checks the credentials above, then submits one job per step
 
 Options:
 
-* `--dl-partition <p>`: run the downloads on a data-transfer partition if your cluster has one
-  (`sinfo -s`). Otherwise they use `--partition` (default `normal`), and each download holds a node.
+* `--dl-partition <p>`: run the downloads on a data-transfer partition, if your cluster has one that
+  reaches the internet (`sinfo -s`). Otherwise they use `--partition` (default `normal`), where each
+  download job holds a whole node for its duration, charged to your allocation.
 * `--time`: default 24 h.
-* `--skip sa1b,ego4d`: skip sources whose access is still pending; build them later with
-  `sbatch --account=<project> scripts/slurm/prepare_data.sbatch download:<s> corpus:<s> corpus_finalize`.
+* `--skip sa1b,ego4d`: leave out sources whose access is still pending. Everything else starts now;
+  `corpus-finalize` waits until you re-run the script without `--skip` once the access is in place.
 
-Everything is idempotent: downloads resume, finished outputs are skipped, and unfinished builds are
-redone from an empty directory. If a job fails or times out, its dependants are cancelled; fix the
-cause and re-run the submit script. Monitor progress:
+The submit script is safe to re-run at any time and only submits what is missing:
+
+* a step that finished leaves `data/.steps/<step>.ok` and is not submitted again (delete the marker to
+  redo the step);
+* a job of the same name that is still queued or running is reused, never duplicated, and the new jobs
+  depend on it;
+* everything else is submitted.
+
+If a job fails or times out, the jobs that depend on it are cancelled (`--kill-on-invalid-dep=yes`): fix
+the cause and re-run the submit script. Downloads resume where they stopped, and an unfinished build is
+redone from an empty directory. Monitor progress:
 
 * `squeue -u $USER`;
 * the job logs in `$SLURM_LOG_DIR`;
 * `python scripts/check_data.py`, a summary of what is in place.
 
-A single step can also be submitted on its own:
+A single step can also be submitted on its own (this ignores the markers and runs the step):
 
 ```bash
 sbatch --account=<project> --time=24:00:00 --output=$SLURM_LOG_DIR/%x-%j.out scripts/slurm/prepare_data.sbatch download:cc12m

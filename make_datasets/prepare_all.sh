@@ -28,8 +28,11 @@
 #   check                summary of everything that is in place (scripts/check_data.py)
 #
 # Credentials needed first (docs/setup_cscs.md): `hf auth login` (+ accepted terms of timm/imagenet-1k-wds),
-# ~/.kaggle/kaggle.json (EgoSchema), the SA-1B link file ($RAW_ROOT/sa1b/sa1b_links.txt), Ego4D AWS keys
-# (`aws configure --profile ego4d`).
+# a Kaggle API token in ~/.kaggle/access_token (EgoSchema), the SA-1B link file ($RAW_ROOT/sa1b/sa1b_links.txt),
+# Ego4D AWS keys (`aws configure --profile ego4d`).
+#
+# Every step that finishes leaves $DATA_ROOT/.steps/<step>.ok (':' -> '_'); submit_data_pipeline.sh does not
+# submit a step that has one again (delete the marker to redo it). Running a step by hand ignores the markers.
 set -euo pipefail
 : "${RAW_ROOT:?run 'source scripts/paths.sh' first}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -40,6 +43,10 @@ TEACHERS="${TEACHERS:-google/gemma-4-E2B-it google/gemma-4-E4B-it}"   # add goog
 OBJECTS_SOURCE="${OBJECTS_SOURCE:-imagenet1k}"                         # = objects_source in config/defaults.yaml
 BENCHMARKS=(vizwiz textvqa wearvqa egoblind egotextvqa egoschema cvbench)
 CORPUS_IMAGE_SOURCES=(text_rich openimages cc12m "$OBJECTS_SOURCE" sa1b epic_kitchens)
+
+STEPS_DIR="${DATA_ROOT:-$(dirname "$RAW_ROOT")}/.steps"   # completion markers (see above)
+INCOMPLETE=""                                              # set by a step that skipped part of its work
+mkdir -p "$STEPS_DIR"
 
 log() { echo "[prepare $(date '+%F %T')] $*"; }
 
@@ -76,7 +83,8 @@ download() {  # download <name>
     vizwiz|textvqa|wearvqa|egoblind|egotextvqa|egoschema|cvbench) bash "$HERE/download/download_$n.sh" ;;
     sa1b)
       export SA1B_LINKS="${SA1B_LINKS:-$RAW_ROOT/sa1b/sa1b_links.txt}"   # link file from the SA-1B download page
-      if [ -f "$SA1B_LINKS" ]; then bash "$HERE/download/corpus/download_sa1b.sh"; else log "WARNING: $SA1B_LINKS missing: SA-1B skipped (docs/setup_cscs.md)"; fi ;;
+      if [ -f "$SA1B_LINKS" ]; then bash "$HERE/download/corpus/download_sa1b.sh"
+      else log "WARNING: $SA1B_LINKS missing: SA-1B skipped (docs/setup_cscs.md)"; INCOMPLETE=1; fi ;;
     text_rich|openimages|cc12m|imagenet1k|imagenet21k|epic_kitchens|ego4d) bash "$HERE/download/corpus/download_$n.sh" ;;
     nyuv2)
       mkdir -p "$RAW_ROOT/nyuv2"
@@ -133,10 +141,14 @@ STEPS=("$@")
 [ ${#STEPS[@]} -eq 0 ] && STEPS=(models benchmarks_download benchmarks_extract benchmarks_lmdb eval_sets probe_data corpus_download blocklist ego4d_download corpus_build corpus_finalize check)
 for s in "${STEPS[@]}"; do
   log "===> $s"
+  INCOMPLETE=""
   case "$s" in
     corpus:*) bash "$HERE/build_corpus.sh" "${s#corpus:}" ;;
     download:*) download "${s#download:}" ;;
     *) "step_$s" ;;
   esac
-  log "<=== $s done"
+  if [ -z "$INCOMPLETE" ] && [ "$s" != check ]; then
+    echo "$(date '+%F %T') job ${SLURM_JOB_ID:-none} on $(hostname)" > "$STEPS_DIR/${s//[:\/]/_}.ok"
+  fi
+  log "<=== $s done${INCOMPLETE:+ (incomplete: not marked as finished)}"
 done

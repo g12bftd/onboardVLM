@@ -10,7 +10,7 @@ cp -n "$D/repo/data/egotextvqa_outdoor_annotation.csv" "$D/repo/data/egotextvqa_
 # Videos (README of the repo): Hugging Face mirror ...
 hf download ShengZhou97/EgoTextVQA --repo-type dataset --local-dir "$D/videos" || {
   # ... or Google Drive: outdoor folder + indoor archive (indoor videos are EgoSchema/Ego4D clips)
-  gdown --folder https://drive.google.com/drive/folders/1uGE-dObMFpmuhewHi9K_I8pdCbV8efm1 -O "$D/videos/outdoor"
-  gdown 12TZyzoJVZ4GxPKMTZWZzIFnwetECPpI2 -O "$D/videos/indoor_archive"
+  gdown -c --folder https://drive.google.com/drive/folders/1uGE-dObMFpmuhewHi9K_I8pdCbV8efm1 -O "$D/videos/outdoor"
+  gdown -c 12TZyzoJVZ4GxPKMTZWZzIFnwetECPpI2 -O "$D/videos/indoor_archive"
 }
 echo "EgoTextVQA ready in $D (extract any archives under $D/videos)"
