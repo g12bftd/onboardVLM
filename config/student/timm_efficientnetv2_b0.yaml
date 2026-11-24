@@ -3,5 +3,5 @@ defaults:
   - timm_spatial@_here_
   - _self_
 model_name: tf_efficientnetv2_b0.in1k
-alignment: stem_stride3
+alignment: input_rescale
 model_kwargs: {drop_path_rate: 0.1}

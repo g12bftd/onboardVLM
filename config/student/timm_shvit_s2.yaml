@@ -1,0 +1,7 @@
+# SHViT-S2 (single-head ViT hybrid; stride 64 -> input upscaled x4/3)
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: shvit_s2.in1k
+alignment: input_rescale
+model_kwargs: {}

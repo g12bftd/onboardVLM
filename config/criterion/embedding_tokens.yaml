@@ -1,0 +1,3 @@
+# embedding_distillation: terms on embed_vision outputs (LM-input space; scale matters to the LM -> raw MSE).
+- {name: token_feature, label: mse, weight: 1.0, metric: mse, normalize: none}
+- {name: token_feature, label: cos, weight: 1.0, metric: cosine}

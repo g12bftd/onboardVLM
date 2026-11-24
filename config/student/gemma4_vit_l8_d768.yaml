@@ -1,7 +1,6 @@
-# Depth-pruned teacher: 8 of 16 layers, full width (~76M).
+# 8 layers x 768 (teacher width, half the depth), ~76M.
 defaults:
   - gemma4_vit@_here_
   - _self_
 hidden_size: 768
 num_hidden_layers: 8
-use_clipped_linears: true

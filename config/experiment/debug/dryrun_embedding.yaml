@@ -1,0 +1,20 @@
+# @package _global_
+# Fully offline sanity check of embedding_distillation: python run_distill.py +experiment=debug/dryrun_embedding
+experiment_name: dryrun_embedding
+deploy_vision_dim: 48
+token_budgets: [70, 140]
+batch_size: 4
+layer_map: {1: 0, 3: 2}
+task:
+  vision_criterion:
+    - {name: intermediate_layer, label: mid, weight: 0.5, mode: feature}
+defaults:
+  - override /task: embedding_distillation
+  - override /criterion: embedding_tokens
+  - override /teacher: gemma4_tiny
+  - override /student: debug_tiny
+  - override /data_module: synthetic
+  - override /trainer: cpu_debug
+callbacks:
+  progress_bar: {refresh_rate: 1}
+  pipeline_logger: {every_n_steps: 1}

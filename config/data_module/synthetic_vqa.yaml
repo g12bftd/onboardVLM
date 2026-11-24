@@ -1,0 +1,10 @@
+# Offline dry run for logit distillation (tiny offline processor).
+_target_: onboard_vlm.data.data_module.DistillDataModule
+train:
+  - {name: synthetic, num_samples: 32, min_side: 96, max_side: 400}
+collator: {token_budgets: [70], train: false, build_student_view: false}
+text: {processor_id: tiny, prompt: auto, with_answer: true}
+batch_size: ${batch_size}
+num_workers: 0
+pin_memory: false
+seed: ${seed}

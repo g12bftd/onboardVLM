@@ -1,0 +1,19 @@
+# @package _global_
+# python -u run_distill.py +experiment=embedding/gemma4_vit_l8_d384_e2b
+# LM-input space of Gemma 4 E2B (1536-d) + vision-space intermediates.
+experiment_name: embedding_gemma4_vit_l8_d384_e2b
+token_budgets: [140, 280, 560]
+batch_size: 32
+layer_map: {2: 4, 5: 10, 7: 15}
+defaults:
+  - override /task: embedding_distillation
+  - override /criterion: embedding_tokens
+  - override /teacher: gemma4_e2b
+  - override /student: gemma4_vit_l8_d384
+  - override /data_module: general_vision
+task:
+  vision_criterion:
+    - {name: token_feature, label: tok_cos, weight: 0.5, metric: cosine}
+    - {name: intermediate_layer, label: mid_feat, weight: 0.5, mode: feature, metric: mse, normalize: layernorm}
+trainer:
+  max_epochs: 30

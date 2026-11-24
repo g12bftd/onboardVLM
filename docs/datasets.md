@@ -29,20 +29,20 @@ Each `make_*.py` accepts `--dry_run` (parse and count only) and `--limit N` (deb
 
 | Dataset | Raw source | Splits written | What is stored | Use in this project |
 |---|---|---|---|---|
-| VizWiz-VQA | vizwiz.cs.colorado.edu: `images/{train,val,test}.zip`, `vqa_data/Annotations.zip` | train 20,523 / val 4,319 / test 8,000 | image, question, 10 answers, `answer_type`, `answerable` | Stage-1 images (train), Stage-2 QA (train), eval (val; test via EvalAI) |
+| VizWiz-VQA | vizwiz.cs.colorado.edu: `images/{train,val,test}.zip`, `vqa_data/Annotations.zip` | train 20,523 / val 4,319 / test 8,000 | image, question, 10 answers, `answer_type`, `answerable` | feature/embedding distillation images (train), logit-distillation QA (train), eval (val; test via EvalAI) |
 | TextVQA 0.5.1 | dl.fbaipublicfiles.com/textvqa: `train_val_images.zip`, `test_images.zip`, `TextVQA_0.5.1_{train,val,test}.json` | train 34,602 / val 5,000 / test 5,734 questions | image, question, 10 answers, `question_id`, `image_classes` | same as VizWiz |
 | WearVQA | HF `tonyliao-meta/WearVQA` (OpenReview link of the NeurIPS 2025 D&B paper) | test | image, question, answer(s), `quality_issues`, `domain`, `task_type` | eval only |
-| EgoBlind | GitHub `doc-doc/EgoBlind` (CSVs) + Google Drive (train data, videos) | test (released half: 1,283 Q), train (Drive CSV) | 16 frames in `[0, t_q]`, timestamps, 4 answers, `type` | Stage-1 frames and Stage-2 (train), eval (test) |
+| EgoBlind | GitHub `doc-doc/EgoBlind` (CSVs) + Google Drive (train data, videos) | test (released half: 1,283 Q), train (Drive CSV) | 16 frames in `[0, t_q]`, timestamps, 4 answers, `type` | distillation frames and QA (train), eval (test) |
 | EgoTextVQA | GitHub `zhousheng97/EgoTextVQA` (CSVs) + HF `ShengZhou97/EgoTextVQA` or Drive (videos) | test; Outdoor high, Outdoor low, Indoor as separate LMDBs | 16 frames in `[0, t_q]`, answer, `question_type` | eval only (no train split) |
 | EgoSchema | GitHub `egoschema/EgoSchema` (questions) + Kaggle `egoschema-public` (videos) | `subset` (500 with answers), `test` (5,031) | 32 frames per clip, 5 options, answer index (`-1` when hidden) | eval only |
 | CV-Bench | HF `nyu-visionx/CV-Bench` | test 2,638 | image, question, choices, answer index, `task`, `source`, prompt | eval only |
 
 **Contamination rule.** The default configs distil only on **train** splits (VizWiz, TextVQA,
-EgoBlind). Label-free Stage 1 on evaluation images would still be transductive, so keep
+EgoBlind). Label-free distillation on evaluation images would still be transductive, so keep
 WearVQA, EgoTextVQA, EgoSchema, CV-Bench and all val/test splits out of training.
 
 These train splits (about 45K images) are far too small and narrow to preserve the encoder's
-general capabilities. [corpus.md](corpus.md) covers the recommended Stage-1 corpus, its builders
+general capabilities. [corpus.md](corpus.md) covers the general-vision corpus (OVLM-GV), its builders
 and the benchmark decontamination blocklist.
 
 ## Source verification
@@ -79,4 +79,4 @@ answerable: int | None, answer_type: str | None, category: str | None, meta: dic
   side exceeds `--max_side` (2048 by default). For a 16:9 frame at the largest budget (1120
   tokens), Gemma itself uses about 2112 px on the long side, so this loses almost nothing.
 * EXIF orientation is applied on decode, as HF `load_image` does.
-* Image-VQA keys are `"<image_id>::q<question_id>"`, so Stage-1 image mode reads each image once.
+* Image-VQA keys are `"<image_id>::q<question_id>"`, so image mode reads each image once.

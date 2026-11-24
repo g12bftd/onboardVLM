@@ -1,0 +1,7 @@
+# EfficientFormerV2-S1 (fixed 224x224 input) + position-query resampler head
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: efficientformerv2_s1.snap_dist_in1k
+alignment: resample
+model_kwargs: {}

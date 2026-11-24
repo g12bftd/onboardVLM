@@ -1,0 +1,7 @@
+# MambaOut-Femto (gated CNN), 6M
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: mambaout_femto.in1k
+alignment: input_rescale
+model_kwargs: {}

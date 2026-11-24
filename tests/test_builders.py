@@ -7,9 +7,9 @@ import subprocess
 import sys
 
 import pytest
+from conftest import ROOT, write_video
 from PIL import Image
 
-from conftest import ROOT, write_video
 from onboard_vlm.data.datasets import LMDBVQADataset
 
 LMDB_DIR = os.path.join(ROOT, "make_datasets", "lmdb")

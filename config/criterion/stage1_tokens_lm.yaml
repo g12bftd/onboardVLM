@@ -1,7 +1,0 @@
-# Recommended Stage-1 objective: vision-tower tokens (RMS-normalised MSE + cosine) PLUS the same tokens
-# after the teacher checkpoint's frozen embed_vision (space: lm), i.e. in the exact space the Gemma 4
-# language model consumes. Only the student is trained.
-- {name: token_feature, label: tok_mse, weight: 1.0, metric: mse, normalize: rms}
-- {name: token_feature, label: tok_cos, weight: 1.0, metric: cosine}
-- {name: token_feature, label: lm_mse, weight: 1.0, metric: mse, normalize: none, space: lm}
-- {name: token_feature, label: lm_cos, weight: 1.0, metric: cosine, space: lm}

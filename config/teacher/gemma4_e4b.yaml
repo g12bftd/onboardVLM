@@ -1,10 +1,9 @@
-# Gemma 4 E4B instruction-tuned. Exact official weights, verified against
-# onboard_vlm/teachers/manifests/gemma4_vision.json on every load.
-# NOTE: the vision tower is byte-identical in E2B / E4B / base / -it; the choice of teacher only
-# selects embed_vision (LM-space losses, 1536-d for E2B, 2560-d for E4B) and the VLM used in Stage 2.
+# Original Gemma 4 E4B instruction-tuned, loaded with Gemma4ForConditionalGeneration.from_pretrained.
+# The vision tower is identical in E2B / E4B / base / -it; the choice selects embed_vision (embedding
+# distillation: 1536-d for E2B, 2560-d for E4B) and the VLM used by logit distillation and evaluation.
 name: gemma4
 model_id: google/gemma-4-E4B-it
-revision: 4ecc2ba63bcac23ba4a767fc87025b1450f84c9c
-load: vision              # vision: 658 vision tensors + embed_vision only (~320 MB) | vlm: full model
-compute_dtype: bfloat16   # bfloat16 = bitwise-identical to the deployed VLM | float32 = lossless upcast
-verify: true              # re-hash every tensor against the manifest
+revision: 4ecc2ba63bcac23ba4a767fc87025b1450f84c9c   # pinned commit for reproducibility ("main" = latest)
+load: vision             # set by the task: vision (feature / embedding) | vlm (logit)
+dtype: bfloat16          # checkpoint dtype
+attn_implementation: sdpa

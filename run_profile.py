@@ -28,8 +28,6 @@ def student_cfg(name: str, deploy_dim: int) -> dict:
     cfg = OmegaConf.to_container(node.student, resolve=True)
     if cfg.get("name") == "timm_spatial":
         cfg["pretrained"] = False  # architecture only
-    if cfg.get("name") == "gemma4_vit":
-        cfg["init"] = "random"  # architecture only (no teacher download needed)
     return cfg
 
 

@@ -1,25 +1,20 @@
 # Design
 
-## 0. The teacher is the exact Gemma 4 E2B / E4B vision encoder
+## 0. The teacher is the original Gemma 4 E2B / E4B model
 
-* **Pinned checkpoints.** `teachers/hub.py` lists the four supported checkpoints at pinned commits.
-* **Vision-only download.** `fetch_vision_weights` reads the safetensors header and fetches only
-  the `model.vision_tower.*` and `model.embed_vision.*` byte ranges (about 320 MB). It hashes the
-  raw checkpoint bytes and compares them with `manifests/gemma4_vision.json`.
-* **Construction.** `build_vision_tower` builds `Gemma4VisionModel` with `_from_config(dtype=bf16)`,
-  exactly like `from_pretrained`, and loads with `strict=True`.
-* **Precision guard.** RoPE `inv_freq` stays fp32. Every module holding it re-asserts fp32 after
-  `.to(dtype)` (`restore_rope_fp32`); rounding it to bf16 changes the outputs.
-* **Load-time check.** `Gemma4Teacher` re-hashes every loaded tensor against the manifest (`verify`).
-* **Full check.** `scripts/verify_gemma4_teacher.py --full_check` compares against
-  `Gemma4ForConditionalGeneration.from_pretrained`: weights, collator inputs vs the official
-  processor, `encode_vision` vs `get_image_features`, and `project_to_lm` vs `embed_vision`.
-  All are bitwise equal at 70, 280 and 1,120 tokens.
-
-The manifest shows that E2B, E4B, base and `-it` share one byte-identical vision tower; only
-`embed_vision` differs. "Distilling the E2B or E4B encoder" is therefore one distillation target.
-The teacher config only decides which `embed_vision` (1536-d or 2560-d LM space) is used for
-LM-space losses and which VLM is used in Stage 2 and evaluation.
+* **Original weights, original code.** `teachers/gemma4.py::load_gemma4_vlm` calls
+  `Gemma4ForConditionalGeneration.from_pretrained(model_id, revision=...)`, as any Gemma 4 user
+  would. `Gemma4Teacher` keeps `vlm.model.vision_tower` (167M params) and `vlm.model.embed_vision`.
+  With `load: vision`, the default for feature and embedding distillation, it releases the language
+  model. Nothing is re-implemented, re-hashed or patched.
+* **Supported checkpoints.** `SUPPORTED_TEACHERS` lists `google/gemma-4-E2B-it`, `-E4B-it`, `-E2B`
+  and `-E4B`, each with a default pinned commit for reproducibility. Any other id raises, including
+  the encoder-free 12B "unified" model. A different `revision` can be passed explicitly.
+* **One encoder.** The vision tower is the same in all four checkpoints (658 tensors,
+  167,364,608 params; verified byte-for-byte in commit 6b24885). Only `embed_vision` differs:
+  768→1536 for E2B, 768→2560 for E4B. "Distilling the E2B or E4B encoder" is therefore one vision
+  target. The teacher choice decides which `embed_vision` the embedding task uses, and which VLM the
+  logit task and evaluation use.
 
 ## 1. Unified vision output contract
 
@@ -35,44 +30,63 @@ This is exactly `Gemma4VisionModel`'s order: its pooler uses kernel index
 ## 2. Geometry and degradations happen once
 
 `geometry.sample_transform` returns a serialisable `TransformParams`: crop, flip, target size,
-budget, and capture degradations. `apply_transform` runs the crop, then the flip, then the Gemma
-resize (uint8, bicubic, antialias; bit-identical to `Gemma4ImageProcessor`), then the
-degradations. The single uint8 result is branched into two views:
+budget, and capture degradations. `apply_transform` runs, in order:
+
+1. the crop;
+2. the flip;
+3. the Gemma resize (uint8, bicubic, antialias; bit-identical to `Gemma4ImageProcessor`);
+4. the degradations.
+
+The single uint8 result is branched into two views:
 
 * **Teacher view**: Gemma patches padded to `max_soft_tokens * 9`.
 * **Student view**: a dense batch with `valid_token_mask`.
 
 The teacher therefore labels exactly the pixels the student sees ("consistent teaching"; tested).
-Stage 2 and evaluation use the official processor for text, fed the transformed images with
+The logit task and evaluation use the official processor for text, fed the transformed images with
 `do_resize=False`.
 
 ## 3. Students
 
 | Student | What it is | Input |
 |---|---|---|
-| `gemma4_vit` (`patch_size: 16`) | transformers' own `Gemma4VisionModel` with configurable depth, width, heads, MLP size, position-table size and clamps; optional weight-selection init from the exact teacher | the teacher's patch sequence, as-is; dense images also accepted |
-| `gemma4_vit` (`patch_size: 48`) | same blocks with one 48-px patch per soft token and no pooling (9× fewer tokens); random init | dense images |
-| `timm_spatial` | any timm CNN / hybrid with exact stride 48: `stem_stride3` surgery or a stride-16 tap + 3×3/s3 conv, verified at construction | dense images |
+| `gemma4_vit` | transformers' own `Gemma4VisionModel`, built from a smaller `Gemma4VisionConfig` (depth, width, heads, head dim, MLP size, position table, clamps), randomly initialised by transformers. A linear head maps `hidden_size` to 768. | the teacher's patch sequence, as-is; dense images also accepted |
+| `timm_spatial` | any timm CNN / hybrid / efficient ViT on the exact 48-px token grid (see below) | dense images |
 | `compact_vit`, `coarse_patch_vit`, `multiplexed_vit` | from-scratch ViTs (2D-RoPE, MiniViT weight sharing) | dense images |
 
-**Weight-selection init** (`students/gemma4_vit.py`, Xu et al. ICLR 2024):
+### Putting a CNN on Gemma's token grid
 
-* Keep `num_hidden_layers` teacher layers (`uniform`, `first`, `last` or an explicit list).
-* Inside each layer, keep whole 64-d heads (`uniform`, `first`, or `magnitude` = ||W_o||).
-* Keep MLP channels (`uniform`, `first`, or `magnitude` = ||W_down[:, j]|| · ||W_up[j]||).
-* Keep a residual-dimension subset that is consistent across *all* tensors (`uniform`, `first`,
-  or `magnitude` = mean RMSNorm gain), and the first `position_embedding_size` rows of the 2D
-  position table.
-* When `hidden_size < 768`, the output projection is initialised to scatter the selected
-  dimensions back to their teacher positions, scaled by sqrt(768/hidden) to undo the pooler's
-  sqrt(D) factor.
-* A full-size copy reproduces the teacher bitwise (tested).
+Gemma emits one token per 48×48-px cell, in row-major order over an `(H/48, W/48)` grid. A per-token
+linear / MLP head only changes the *channel* dimension. It cannot create the right *number* of
+tokens, nor put each token on the right 48-px cell:
 
-**Alignment proof for CNNs.** With circular padding, a 48-px input shift moves the token map by
-exactly one token. A stride-32 network plus interpolation fails this test.
+* A stride-32 CNN gives `(H/32) × (W/32)` cells, 2.25× too many, and they straddle Gemma's cells.
+  Resampling them (pooling, bilinear) blurs neighbouring cells together and breaks the one-token
+  shift test below.
+* Fixed-resolution models (LeViT, EfficientViT-M, EfficientFormerV2, MobileViTv2) fail *before* the
+  head: they reject any input that is not 224×224, or their position biases are tied to a 7×7 grid.
 
-**Batch invariance.** ViT-type students mask padding, so batched and per-image outputs agree to
-fp32 rounding. CNNs see their neighbours' zero padding, so the grafted tower runs them per image.
+`TimmSpatialStudent` therefore has four `alignment` modes. All of them are verified at construction
+on probe sizes:
+
+| mode | how | backbone | used for |
+|---|---|---|---|
+| `input_rescale` (default) | resize the image by r/48 (2/3 for stride-32 nets, area filter), so stride r lands exactly on 48-px cells | **unmodified** pretrained weights | MobileNetV3/V4, EfficientNet(V2), FastViT, MobileCLIP(2), RepViT, StarNet, TinyViT, ConvNeXt-V2, EdgeNeXt, MambaOut, SHViT, ... |
+| `stem_stride3` | change the first stride-2 conv to stride 3 (48 = 3 × 16) | one conv modified | ablation |
+| `tap16_conv3` | take the stride-16 stage, add a 3×3/s3 conv | truncated | MobileNetV5 (Gemma 3n) |
+| `resample` | resize each image to the model's fixed input, then a learned **position-query cross-attention head**: one query per output token, from Fourier features of its cell centre, attending over the backbone's feature map | unmodified | LeViT, EfficientViT-M, EfficientFormerV2, MobileViTv2 |
+
+`input_rescale` keeps the "MLP at the end" idea, but applies it to a feature map that already lies
+on the token grid. With an area filter, 2/3 downscaling maps every 48-px cell onto a 32-px cell
+with no boundary special cases, so a 48-px input shift moves the token map by exactly one token
+(tested with circular padding). A stride-32 net plus interpolation fails the same test (negative
+control). `resample` is the honest version of "add a layer at the end" for fixed-resolution
+models. It works at every grid size and is batch invariant. It cannot recover detail the backbone
+never saw (224 px input), which is why those models land at ~1 GMAC (`run_profile.py`).
+
+**Batch invariance.** Students that mask padding (ViTs, resample heads) give the same output batched
+or one image at a time, up to fp32 rounding. Grid-aligned CNNs see their neighbours' zero padding,
+so the grafted tower runs them one image at a time.
 
 ## 4. Losses (YAML-composable, `config/criterion/*.yaml`)
 
@@ -80,34 +94,62 @@ fp32 rounding. CNNs see their neighbours' zero padding, so the grafted tower run
 * `relational_token`: per-image token-similarity matching; never a global Gram matrix.
 * `intermediate_layer`: on the layers in `layer_map`. Teacher layers are pooled with Gemma's own
   position rule (tested identical to `Gemma4VisionPooler`).
+* `grafted_logit_kd`: temperature-scaled KL on the answer span (+ optional CE).
 
-Each term has `space: vision | lm`:
+`CompositeLoss` sums weighted terms and logs each one under its `label`.
 
-* `vision` (default) compares the 768-d tower outputs.
-* `lm` compares the tokens after the teacher checkpoint's frozen `embed_vision` (scale-free
-  RMSNorm + projection, computed in fp32): the exact space the language model reads.
+## 5. Distillation types are tasks
 
-## 5. Pipeline
+Following TimeFM `cerebro_v2`, each distillation type is a Lightning task class. It is selected by
+`config/task/<type>.yaml` and built as `hydra.utils.instantiate(cfg.task, cfg)`, i.e.
+`Task(hparams, **task_cfg)`. `BaseDistillationTask` (`onboard_vlm/tasks/base_task.py`) holds what
+they share:
 
-**Stage 1 (encoder-only).** The frozen teacher tower runs online, or its outputs come from the
-safetensors cache. The adapter adds projection heads only where a student's width differs from
-768 (intermediate layers of narrow or CNN students). The adapter is never exported.
+* student construction;
+* lazy teacher loading;
+* AdamW with warmup-cosine;
+* loss logging;
+* checkpoint-safe batch transfer;
+* export.
 
-**Stage 2 (optional).** `GraftedVLM` swaps `vlm.model.vision_tower` for a `StudentVisionTower`,
-whose call signature matches `Gemma4VisionModel`. Images and video frames both go through it.
+| task (`config/task/`) | what is compared | what is loaded | criterion configs |
+|---|---|---|---|
+| `feature_distillation` (default) | student vs teacher **vision tokens** (768-d) and optional intermediate layers | vision tower only (or nothing, with an offline teacher cache) | `feature_tokens`, `feature_tokens_relational`, `feature_full` |
+| `embedding_distillation` | both token sets after the checkpoint's **frozen `embed_vision`**: the exact LM input space (1536-d / 2560-d) | vision tower + `embed_vision`; never the LM | `embedding_tokens`, `embedding_tokens_relational` (+ `task.vision_criterion` for vision-space terms) |
+| `logit_distillation` | **next-token logits** of the VLM with the student grafted in, vs the same VLM with its own tower; KL on answer spans | the full VLM; only the student trains, so the VLM stays byte-identical (tested) | `logit_kd` |
 
-* Default: the student is trainable and **everything else in the VLM is frozen and stays
-  byte-identical** (tested).
-* Target logits come from the same VLM with its original tower (`teacher_vision()` context).
-* KL is computed on answer spans only, with `logits_to_keep` so the 262K-vocabulary tensor is
-  only materialised for the answer tail.
-* Unfreezing `embed_vision` (full / LoRA) is an ablation.
-* A different logit teacher (e.g. E4B logits for an E2B deployment) is approximate: the two
-  tokenizers differ in 1 vocabulary entry and 14 merges.
+The logit task usually starts from a feature or embedding export (`student_dir=...`). Unfreezing
+`embed_vision` (full / LoRA) is an ablation.
 
-## 6. Reproducibility
+## 6. Real-time logging
 
-* Pinned checkpoint commits (`config/teacher/*.yaml` and `SUPPORTED_TEACHERS`).
-* Per-tensor hashes, checked at every load.
-* Every random augmentation is stored in `TransformParams` (cache replay is exact).
-* Per-worker RNGs; Hydra configs saved with every run.
+`onboard_vlm/utils/logging.py` sets up one logger tree (`onboard_vlm.*`). It writes to stdout and to
+`<hydra run dir>/run_rank{r}.log`. Rank 0 logs INFO; other ranks log warnings only.
+
+* `stage("...")` brackets every pipeline step: `===> name` when it starts, then
+  `<=== name done in Xs | peak RSS / GPU memory` (or `FAILED`). Covered steps:
+  * seeding;
+  * building the task;
+  * building the student;
+  * downloading / loading the original Gemma 4 weights;
+  * grafting;
+  * setting up every dataset (with sizes and mixture weights);
+  * building the trainer;
+  * training;
+  * validation;
+  * export.
+* `PipelineLoggingCallback` reports training progress:
+  * at fit start: devices, strategy, precision and step budget;
+  * every N steps: losses, lr, images/s, elapsed time, ETA and memory;
+  * at every validation: start and end metrics;
+  * at checkpoint saves and at the end of each epoch;
+  * on exceptions.
+* `run_cache_teacher.py`, `run_eval.py` and `run_profile.py` use the same stages.
+
+## 7. Reproducibility
+
+* Pinned default checkpoint commits (`config/teacher/*.yaml`, `SUPPORTED_TEACHERS`).
+* Every random augmentation is stored in `TransformParams`, so cache replay is exact.
+* The corpus mixture sampler is deterministic given seed + epoch, and identical on all ranks.
+* The finalized corpus is identified by a digest (`docs/corpus.md`).
+* The Hydra config is saved with every run and logged at start-up.

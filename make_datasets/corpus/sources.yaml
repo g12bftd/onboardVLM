@@ -1,0 +1,78 @@
+# OVLM-GV: the general-vision distillation corpus (definition used by build_corpus.sh, finalize_corpus.py
+# and documented in docs/corpus.md). One entry per source directory under $CORPUS_ROOT, in de-duplication
+# priority order (an image found in several sources is kept in the first one listed).
+#
+# Mixture weights live in config/data_module/general_vision.yaml; counts below are what each source
+# provides *before* filtering / decontamination / de-duplication (exact post-build numbers are written to
+# $CORPUS_ROOT/corpus_manifest.json and CORPUS_CARD.md by finalize_corpus.py).
+name: OVLM-GV
+version: 1
+sources:
+  # ---------------------------------------------------------------- text-rich (OCR, documents, charts, UI)
+  - dir: text_rich/pixmo_docs
+    group: text_rich
+    name: PixMo-Docs (charts, tables, diagrams, other)
+    url: https://huggingface.co/datasets/allenai/pixmo-docs
+    license: ODC-BY-1.0
+    images: 255261
+    build: --source parquet --input_path "$RAW_ROOT/pixmo_docs/**/train-*.parquet" --image_column image
+  - dir: text_rich/synthdog_en
+    group: text_rich
+    name: SynthDoG-en (synthetic documents)
+    url: https://huggingface.co/datasets/naver-clova-ix/synthdog-en
+    license: MIT
+    images: 500000
+    build: --source parquet --input_path "$RAW_ROOT/synthdog_en/data/train-*.parquet" --image_column image
+  - dir: text_rich/cauldron/*
+    group: text_rich
+    name: The Cauldron - document / chart / scene-text / UI subsets (train images only)
+    url: https://huggingface.co/datasets/HuggingFaceM4/the_cauldron
+    license: per subset (see docs/corpus.md)
+    images: 405000   # 13 subsets, the 4 large synthetic ones capped at 50k (CAULDRON_SUBSETS in build_corpus.sh)
+    build: --source parquet --input_path "$RAW_ROOT/the_cauldron/<subset>/*.parquet" --image_column images
+  # ---------------------------------------------------------------- egocentric (wearable viewpoint)
+  - dir: egocentric/ego4d
+    group: egocentric
+    name: Ego4D v2 video_540ss, scenario-stratified ~1,000 h, frames at 0.5 fps (EgoSchema source videos excluded)
+    url: https://ego4d-data.org
+    license: Ego4D License Agreement (research)
+    images: 1800000  # upper bound before still-frame removal
+    build: make_frame_corpus.py --input_path "$RAW_ROOT/ego4d/v2/video_540ss" --fps 0.5
+  - dir: egocentric/epic_kitchens
+    group: egocentric
+    name: EPIC-KITCHENS-100 videos, frames at 0.5 fps
+    url: https://epic-kitchens.github.io/2025
+    license: CC BY-NC 4.0
+    images: 180000
+    build: make_frame_corpus.py --input_path "$RAW_ROOT/epic_kitchens/EPIC-KITCHENS" --fps 0.5
+  # ---------------------------------------------------------------- multi-object scenes
+  - dir: openimages
+    group: scenes
+    name: Open Images V7 - train images with box annotations (CVDF)
+    url: https://github.com/cvdfoundation/open-images-dataset
+    license: images CC BY 2.0 (per image), annotations CC BY 4.0
+    images: 1743042
+    build: --source webdataset --input_path "$RAW_ROOT/openimages/train_*.tar.gz" --id_key openimages
+  - dir: sa1b
+    group: scenes
+    name: SA-1B, first 100 of 1,000 tars (high resolution, dense scenes)
+    url: https://ai.meta.com/datasets/segment-anything-downloads/
+    license: SA-1B Dataset Research License
+    images: 1120000
+    build: --source webdataset --input_path "$RAW_ROOT/sa1b/sa_*.tar"
+  # ---------------------------------------------------------------- object-centric
+  - dir: imagenet21k
+    group: objects
+    name: ImageNet-21k (fall11, timm/imagenet-22k-wds train)
+    url: https://huggingface.co/datasets/timm/imagenet-22k-wds
+    license: ImageNet terms of access (non-commercial research)
+    images: 13673551
+    build: --source webdataset --input_path "$RAW_ROOT/imagenet21k/imagenet22k-train-*.tar"
+  # ---------------------------------------------------------------- web-scale, open-vocabulary
+  - dir: cc12m
+    group: web
+    name: Conceptual 12M (pixparse/cc12m-wds snapshot)
+    url: https://huggingface.co/datasets/pixparse/cc12m-wds
+    license: CC12M terms (images remain under their owners' rights; research use)
+    images: 10968539
+    build: --source webdataset --input_path "$RAW_ROOT/cc12m/cc12m-train-*.tar"

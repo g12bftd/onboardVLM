@@ -1,0 +1,4 @@
+# feature_distillation: final tokens + per-image token relations (Hao et al., NeurIPS 2022).
+- {name: token_feature, label: tok_mse, weight: 1.0, metric: mse, normalize: rms}
+- {name: token_feature, label: tok_cos, weight: 1.0, metric: cosine}
+- {name: relational_token, label: rel, weight: 1.0, similarity: cosine, match: kl, temperature: 0.1}

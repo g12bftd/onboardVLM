@@ -1,0 +1,9 @@
+# @package _global_
+# Distillation type 1: student vision tokens <- original Gemma 4 vision-tower tokens
+# (final tokens + optional layer-mapped intermediates and per-image token relations).
+task:
+  _target_: onboard_vlm.tasks.feature_distillation.FeatureDistillationTask
+  _recursive_: false
+  adapter: {kind: linear, force_final: false, force_layers: false}   # training-only projection heads
+  optimizer: {lr: 1.0e-3, weight_decay: 0.05, betas: [0.9, 0.999]}
+  scheduler: {warmup_ratio: 0.05, min_lr_ratio: 0.01}

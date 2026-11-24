@@ -1,7 +1,7 @@
-# ConvNeXt-V2-Nano (patchify stem: stride-16 tap)
+# ConvNeXt-V2-Nano (patchify stem; unmodified via input_rescale)
 defaults:
   - timm_spatial@_here_
   - _self_
 model_name: convnextv2_nano.fcmae_ft_in22k_in1k
-alignment: tap16_conv3
+alignment: input_rescale
 model_kwargs: {drop_path_rate: 0.1}

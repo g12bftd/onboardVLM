@@ -7,8 +7,14 @@ import torch
 from onboard_vlm.data.collator import DualViewCollator
 from onboard_vlm.geometry import pad_dense
 from onboard_vlm.registry import build_student
-from onboard_vlm.teachers.gemma4 import EncoderFreeTeacherError, Gemma4Teacher, pool_patch_states
-from onboard_vlm.teachers.hub import UnsupportedTeacherError
+from onboard_vlm.teachers.gemma4 import (
+    SUPPORTED_TEACHERS,
+    EncoderFreeTeacherError,
+    Gemma4Teacher,
+    UnsupportedTeacherError,
+    pool_patch_states,
+    resolve_revision,
+)
 
 D = 48  # tiny teacher vision width
 STUDENTS = {
@@ -16,9 +22,9 @@ STUDENTS = {
     "coarse_patch_vit": {"name": "coarse_patch_vit", "out_dim": D, "embed_dim": 32, "depth": 3, "num_heads": 2, "stem": "conv"},
     "multiplexed_vit": {"name": "multiplexed_vit", "out_dim": D, "embed_dim": 32, "num_heads": 2, "num_shared_blocks": 2, "steps_per_block": 2},
     "gemma4_vit": {"name": "gemma4_vit", "out_dim": D, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 16, "position_embedding_size": 128},
-    "gemma4_vit_p48": {"name": "gemma4_vit", "out_dim": D, "hidden_size": 32, "num_hidden_layers": 2, "head_dim": 16, "patch_size": 48},
     "timm_mobilenetv4": {"name": "timm_spatial", "model_name": "mobilenetv4_conv_small", "out_dim": D, "pretrained": False},
     "timm_fastvit": {"name": "timm_spatial", "model_name": "fastvit_t8", "out_dim": D, "pretrained": False, "alignment": "tap16_conv3"},
+    "timm_levit_resample": {"name": "timm_spatial", "model_name": "levit_128s", "out_dim": D, "pretrained": False, "alignment": "resample"},
 }
 SOURCE_SIZES = [(480, 640), (1080, 1920), (300, 1200), (2000, 500), (97, 131), (333, 333)]
 
@@ -34,7 +40,7 @@ def test_student_teacher_token_parity(tiny_teacher, family, budget):
     batch = _batch(budget, train=budget == 140)
     t = tiny_teacher.encode_vision(batch.teacher_inputs, layers=[0, 2])
     student = build_student(STUDENTS[family]).eval()
-    layers = sorted(student.layer_dims)[-2:]
+    layers = sorted(student.layer_dims)[-2:]  # (resample heads expose no intermediate stages)
     with torch.no_grad():
         s = student(batch.student_images, batch.valid_token_mask, return_layers=layers)
     n = sum(batch.image_token_lengths)
@@ -46,7 +52,7 @@ def test_student_teacher_token_parity(tiny_teacher, family, budget):
         assert batch.image_token_lengths[i] == tr.num_tokens <= tr.token_budget
 
 
-@pytest.mark.parametrize("family", ["compact_vit", "coarse_patch_vit", "multiplexed_vit", "gemma4_vit", "gemma4_vit_p48"])
+@pytest.mark.parametrize("family", ["compact_vit", "coarse_patch_vit", "multiplexed_vit", "gemma4_vit"])
 def test_vit_students_are_batch_invariant(family):
     torch.manual_seed(0)
     student = build_student(STUDENTS[family]).eval()
@@ -81,9 +87,11 @@ def test_only_e2b_e4b_teachers_are_accepted(model_id):
         Gemma4Teacher(model_id)
 
 
-def test_pinned_revision_enforced():
-    with pytest.raises(UnsupportedTeacherError):
-        Gemma4Teacher("google/gemma-4-E2B-it", revision="main")
+def test_default_revisions_are_pinned():
+    assert set(SUPPORTED_TEACHERS) == {"google/gemma-4-E2B-it", "google/gemma-4-E4B-it", "google/gemma-4-E2B", "google/gemma-4-E4B"}
+    for model_id, sha in SUPPORTED_TEACHERS.items():
+        assert resolve_revision(model_id) == sha and len(sha) == 40
+    assert resolve_revision("google/gemma-4-E2B-it", "main") == "main"  # explicit override is respected
 
 
 def test_encoder_free_teacher_rejected(tiny_cfg):

@@ -1,3 +1,0 @@
-name: grafted_logit_kd
-temperature: 1.0
-ce_weight: 0.0

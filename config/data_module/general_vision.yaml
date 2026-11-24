@@ -1,0 +1,41 @@
+# OVLM-GV: general-vision distillation corpus (docs/corpus.md; build with make_datasets/build_corpus.sh).
+# ~30M raw images from 6 groups, filtered, benchmark-decontaminated and de-duplicated (exact counts:
+# $CORPUS_ROOT/CORPUS_CARD.md). Sampling is a fixed mixture:
+# every epoch draws `samples_per_epoch` images, multinomially over components, uniformly within one.
+# Ablate from the CLI: data_module.mixture.ego4d=0 (one component) or data_module.drop_groups=[egocentric]
+# (a whole group; leave-one-group-out sweep: +experiment=sweeps/corpus_mixture).
+_target_: onboard_vlm.data.data_module.DistillDataModule
+mixture:                 # sampling probability per component (sums to 1; renormalised if not)
+  cc12m: 0.25            # web, open-vocabulary                       ~10.9M
+  imagenet21k: 0.20      # object-centric, 21k classes                 ~13.7M
+  openimages: 0.10       # multi-object scenes (box-annotated subset)   ~1.7M
+  sa1b: 0.08             # high-resolution dense scenes                 ~1.1M
+  pixmo_docs: 0.06       # text-rich: charts / tables / diagrams        ~0.26M
+  synthdog_en: 0.03      # text-rich: synthetic documents               ~0.5M
+  cauldron: 0.08         # text-rich: docs / charts / scene text / UI   ~0.4M
+  ego4d: 0.14            # egocentric video frames                      ~1.5M
+  epic_kitchens: 0.03    # egocentric kitchen frames                    ~0.15M
+  target: 0.03           # benchmark TRAIN splits (VizWiz, TextVQA, EgoBlind) ~45K
+train:
+  - {name: image_corpus, root: "${corpus_root}/cc12m", require_finalized: true, group: web, weight: "${data_module.mixture.cc12m}"}
+  - {name: image_corpus, root: "${corpus_root}/imagenet21k", require_finalized: true, group: objects, weight: "${data_module.mixture.imagenet21k}"}
+  - {name: image_corpus, root: "${corpus_root}/openimages", require_finalized: true, group: scenes, weight: "${data_module.mixture.openimages}"}
+  - {name: image_corpus, root: "${corpus_root}/sa1b", require_finalized: true, group: scenes, weight: "${data_module.mixture.sa1b}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/pixmo_docs", require_finalized: true, group: text_rich, weight: "${data_module.mixture.pixmo_docs}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/synthdog_en", require_finalized: true, group: text_rich, weight: "${data_module.mixture.synthdog_en}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/cauldron/*", require_finalized: true, group: text_rich, weight: "${data_module.mixture.cauldron}"}
+  - {name: image_corpus, root: "${corpus_root}/egocentric/ego4d", require_finalized: true, group: egocentric, weight: "${data_module.mixture.ego4d}"}
+  - {name: image_corpus, root: "${corpus_root}/egocentric/epic_kitchens", require_finalized: true, group: egocentric, weight: "${data_module.mixture.epic_kitchens}"}
+  - {name: target_train, data_root: "${data_root}", group: target, weight: "${data_module.mixture.target}"}
+val:                     # held-out corpus images (finalize_corpus.py) + target-domain val images
+  - {name: image_corpus, split: holdout, limit: 2000, root: ["${corpus_root}/cc12m", "${corpus_root}/imagenet21k", "${corpus_root}/openimages", "${corpus_root}/sa1b"]}
+  - {name: image_corpus, split: holdout, limit: 1000, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}
+  - {name: image_corpus, split: holdout, limit: 1000, root: "${corpus_root}/egocentric/*"}
+  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: image, limit: 1000}
+drop_groups: []
+samples_per_epoch: 2000000
+collator: {token_budgets: "${token_budgets}", train: true, crop_scale: [0.5, 1.0], crop_ratio: [0.75, 1.3333], hflip_prob: 0.0}
+val_collator: {token_budgets: [280], train: false}
+batch_size: ${batch_size}
+num_workers: ${num_workers}
+seed: ${seed}

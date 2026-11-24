@@ -1,9 +1,0 @@
-# Gemma 4 blocks on 48-px patches (one patch per soft token, no pooling): ~9x fewer tokens than
-# gemma4_vit_l8_d384 at the same depth/width -> glasses-class compute. Random init only.
-defaults:
-  - gemma4_vit@_here_
-  - _self_
-patch_size: 48
-hidden_size: 384
-num_hidden_layers: 8
-init: random

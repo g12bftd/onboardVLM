@@ -1,5 +1,5 @@
-# Random tiny Gemma 4 (real module classes, no download) for offline dry runs. Pair with deploy_vision_dim=48.
+# Tiny randomly initialised Gemma 4 (same classes, no download) for offline dry runs. Pair with deploy_vision_dim=48.
 name: gemma4
 tiny: {vision_hidden: 48, vision_layers: 3}
 load: vision
-compute_dtype: float32
+dtype: float32

@@ -21,7 +21,7 @@ import os
 import re
 import time
 from collections import defaultdict
-from typing import Any, Callable, Iterable, Protocol, Sequence
+from typing import Any, Iterable, Protocol, Sequence
 
 # --------------------------------------------------------------------------------------
 # Prompts
@@ -188,7 +188,9 @@ def egoblind_prompts(qid: str, question: str, answers: Sequence[str], pred: str)
 
 def egotextvqa_prompts(qid: str, question: str, answer: str, pred: str) -> tuple[str, str, str]:
     # Official preprocessing: remove newlines, lower-case answer and prediction.
-    clean: Callable[[str], str] = lambda s: str(s).replace("\n", "").lower()
+    def clean(s: str) -> str:
+        return str(s).replace("\n", "").lower()
+
     return qid, EGOTEXTVQA_JUDGE_SYSTEM, EGOTEXTVQA_JUDGE_USER.format(question=question, answer=clean(answer), pred=clean(pred))
 
 

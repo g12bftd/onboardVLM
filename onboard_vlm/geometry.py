@@ -131,8 +131,8 @@ def apply_transform(image: torch.Tensor, params: TransformParams) -> torch.Tenso
     if tuple(image.shape[-2:]) != tuple(params.src_hw):
         raise ValueError(f"image size {tuple(image.shape[-2:])} != params.src_hw {params.src_hw}")
     if params.crop_box is not None:
-        t, l, ch, cw = params.crop_box
-        image = image[..., t : t + ch, l : l + cw]
+        top, left, ch, cw = params.crop_box
+        image = image[..., top : top + ch, left : left + cw]
     if params.hflip:
         image = image.flip(-1)
     if tuple(image.shape[-2:]) != tuple(params.target_hw):

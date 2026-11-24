@@ -38,3 +38,8 @@ filterwarnings = ["ignore::DeprecationWarning", "ignore::UserWarning"]
 
 [tool.ruff]
 line-length = 140
+
+[tool.ruff.lint]
+# pyflakes + import order + bugbear + statement-level pycodestyle; long lines are allowed (paths, tables).
+select = ["E4", "E7", "E9", "F", "I", "B", "RUF100"]
+ignore = ["B905"]

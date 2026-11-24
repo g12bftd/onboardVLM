@@ -1,6 +1,0 @@
-# Tokens + relations + layer-mapped intermediate supervision (needs a non-empty layer_map).
-- {name: token_feature, label: tok_mse, weight: 1.0, metric: mse, normalize: rms}
-- {name: token_feature, label: tok_cos, weight: 1.0, metric: cosine}
-- {name: relational_token, label: rel, weight: 1.0, similarity: cosine, match: kl, temperature: 0.1}
-- {name: intermediate_layer, label: mid_feat, weight: 0.5, mode: feature, metric: mse, normalize: layernorm}
-- {name: intermediate_layer, label: mid_rel, weight: 0.5, mode: relational, similarity: cosine, match: mse}

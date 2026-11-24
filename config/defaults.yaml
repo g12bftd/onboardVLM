@@ -1,4 +1,4 @@
-# Default Stage-1 distillation run. Override order (as in TimeFM/cerebro_v2):
+# Default distillation run. Override order (as in TimeFM/cerebro_v2):
 #   CLI  >  experiment config (+experiment=...)  >  module configs  >  this file
 tag: onboard_vlm
 experiment_name: debug
@@ -21,11 +21,19 @@ token_budgets: [280]
 layer_map: {}
 
 resume_ckpt: null
-# Offline teacher-feature cache (run_cache_teacher.py); used by data_module=stage1_cached.
+training: true
+final_validate: true
+# Offline teacher-feature cache (run_cache_teacher.py). When set, the feature task skips loading the teacher
+# and expects every batch to carry cached targets (use the cached_teacher dataset wrapper).
 cache_root: null
+# logit_distillation: export of a feature / embedding run to graft into the VLM.
+student_dir: null
 export_dir: ${output_root}/students/${experiment_name}
 
 callbacks:
+  pipeline_logger:                 # real-time progress / stage logging (stdout + run_rank*.log)
+    _target_: onboard_vlm.utils.callbacks.PipelineLoggingCallback
+    every_n_steps: 50
   lr_monitor:
     _target_: pytorch_lightning.callbacks.LearningRateMonitor
     logging_interval: step
@@ -47,9 +55,9 @@ io:
 
 defaults:
   - _self_
+  - task: feature_distillation     # feature_distillation | embedding_distillation | logit_distillation
+  - criterion: feature_tokens      # must match the task: feature_* | embedding_* | logit_kd
   - teacher: gemma4_e2b            # gemma4_e2b | gemma4_e4b | gemma4_e2b_base | gemma4_e4b_base
-  - student: gemma4_vit_l8_d384    # any config/student/*.yaml (gemma4_vit_*, timm_*, compact_vit_*, ...)
-  - criterion: stage1_tokens_lm
-  - data_module: stage1_general    # stage1_mix = benchmark train splits only (small, for quick runs)
-  - task: stage1
+  - student: gemma4_vit_l8_d384    # any config/student/*.yaml (gemma4_vit_*, timm_*, compact_vit_s, ...)
+  - data_module: general_vision    # general_vision (corpus) | general_vision_lite | benchmark_train | vqa_train
   - trainer: gpu_ddp

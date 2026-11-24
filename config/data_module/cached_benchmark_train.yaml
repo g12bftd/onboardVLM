@@ -1,0 +1,16 @@
+# feature_distillation from an offline teacher cache (run_cache_teacher.py): the teacher is never loaded.
+#   python run_cache_teacher.py dataset.path=$ONBOARD_VLM_DATA/vizwiz cache_root=$CACHE layers=[3,9,15]
+#   python run_distill.py +experiment=feature/<...> data_module=cached_benchmark_train cache_root=$CACHE
+# The cache fixes the augmentation views, so the collator replays the cached geometry.
+_target_: onboard_vlm.data.data_module.DistillDataModule
+train:
+  - name: cached_teacher
+    cache_root: ${cache_root}
+    base: {name: lmdb_vqa, path: "${data_root}/vizwiz", split: train, mode: image}
+val:
+  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: image, limit: 1000}
+collator: {token_budgets: "${token_budgets}", train: false}
+val_collator: {token_budgets: [280], train: false}
+batch_size: ${batch_size}
+num_workers: ${num_workers}
+seed: ${seed}

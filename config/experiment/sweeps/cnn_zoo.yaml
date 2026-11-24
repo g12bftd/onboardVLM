@@ -1,12 +1,12 @@
 # @package _global_
-# Every CNN / hybrid family under the same Stage-1 recipe:
-#   python -u run_distill.py -m +experiment=sweeps/cnn_zoo
+# Every CNN / hybrid family under the same recipe:  python -u run_distill.py -m +experiment=sweeps/cnn_zoo
 experiment_name: sweep_zoo_${hydra:runtime.choices.student}
 defaults:
+  - override /task: feature_distillation
+  - override /criterion: feature_tokens
   - override /teacher: gemma4_e2b
-  - override /criterion: stage1_tokens_lm
-  - override /data_module: stage1_general
+  - override /data_module: general_vision_lite
 hydra:
   sweeper:
     params:
-      student: timm_mobilenetv4_conv_m,timm_mobilenetv4_hybrid_m,timm_efficientnetv2_b3,timm_mobileclip2_mci0,timm_mobileclip2_mci2,timm_repvit_m1_5,timm_efficientvit_b2,timm_tinyvit_11m,timm_starnet_s2,timm_convnextv2_nano
+      student: timm_mobilenetv4_conv_m,timm_mobilenetv4_hybrid_m,timm_efficientnetv2_b3,timm_mobileclip2_mci0,timm_mobileclip2_mci2,timm_repvit_m1_5,timm_efficientvit_b2,timm_tinyvit_11m,timm_starnet_s2,timm_convnextv2_nano,timm_mambaout_femto,timm_efficientformerv2_s1

@@ -192,7 +192,7 @@ class DistillBatch:
         transforms: per-image :class:`TransformParams` actually applied.
         sample_ids: dataset keys.
         text_inputs: tokenised VLM inputs (``input_ids``, ``attention_mask``, ``mm_token_type_ids``,
-            ``loss_mask`` ...) for Stage-2 / evaluation; ``None`` for Stage-1.
+            ``loss_mask`` ...) for logit distillation / evaluation; ``None`` otherwise.
         cached_teacher: teacher features read from the offline cache, if any.
         extras: un-collated per-sample fields (questions, answers, categories ...).
     """
@@ -278,4 +278,4 @@ class VisionTeacher(ABC):
 
     @abstractmethod
     def forward_vlm(self, **vlm_inputs: torch.Tensor) -> torch.Tensor:
-        """Full VLM forward returning next-token logits ``[B, L, V]`` (Stage-2 targets)."""
+        """Full VLM forward returning next-token logits ``[B, L, V]`` (logit-distillation targets)."""

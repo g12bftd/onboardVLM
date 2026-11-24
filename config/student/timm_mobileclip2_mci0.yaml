@@ -3,5 +3,5 @@ defaults:
   - timm_spatial@_here_
   - _self_
 model_name: fastvit_mci0.apple_mclip2_dfndr2b
-alignment: stem_stride3
+alignment: input_rescale
 model_kwargs: {}

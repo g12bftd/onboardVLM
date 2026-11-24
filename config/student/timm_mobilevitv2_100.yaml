@@ -1,0 +1,7 @@
+# MobileViTv2-1.0 (pads odd feature sizes) + position-query resampler head
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: mobilevitv2_100.cvnets_in1k
+alignment: resample
+model_kwargs: {}

@@ -1,0 +1,7 @@
+# LeViT-128 (fixed 224x224 input) + position-query resampler head
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: levit_128.fb_dist_in1k
+alignment: resample
+model_kwargs: {}

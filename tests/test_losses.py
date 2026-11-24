@@ -89,7 +89,7 @@ def test_composite_and_intermediate():
         {"name": "intermediate_layer", "weight": 0.5, "mode": "relational"},
     ])
     total, logs = crit(s, t)
-    assert set(logs) == {"token_feature_0", "rel", "intermediate_layer_2", "total"}
+    assert set(logs) == {"token_feature_0", "rel", "intermediate_layer_2"}  # the task adds "total"
     manual = logs["token_feature_0"] + 0.5 * logs["rel"] + 0.5 * logs["intermediate_layer_2"]
     assert torch.allclose(total, manual)
     assert IntermediateLayerLoss(layers=[4])(s, t) > 0
@@ -104,3 +104,11 @@ def test_logit_kd_zero_for_identical_and_positive_otherwise():
     assert logs["kd_kl"].abs() < 1e-6 and "kd_ce" in logs
     loss2, logs2 = kd(torch.randn(2, 5, 11), logits, mask, tgt)
     assert logs2["kd_kl"] > 0
+
+
+def test_composite_prefix_and_description():
+    s, t = _pair([3], layers=[1])
+    crit = CompositeLoss([{"name": "token_feature", "label": "mse"}, {"name": "token_feature", "metric": "cosine", "weight": 0.5, "label": "cos"}])
+    _, logs = crit(s, t, prefix="lm_")
+    assert set(logs) == {"lm_mse", "lm_cos"}
+    assert crit.describe() == "1*mse[TokenFeatureLoss] + 0.5*cos[TokenFeatureLoss]"

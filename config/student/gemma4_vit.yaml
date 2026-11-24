@@ -1,26 +1,17 @@
-# A smaller Gemma 4 vision encoder: the exact transformers `Gemma4VisionModel` code (learned 2D position
-# table, axial 2D-RoPE, QK/V-norm, sandwich RMSNorms, gated-GELU MLP, 3x3 position pooling) with every
-# size knob exposed. Teacher reference: 16 layers, hidden 768, 12 heads x 64, MLP 3072, 10240 positions/axis.
-# Override anything from the CLI, e.g. student.num_hidden_layers=6 student.hidden_size=512 student.init=random
+# A smaller Gemma 4 vision encoder: the original transformers `Gemma4VisionModel` built from a smaller
+# Gemma4VisionConfig (fresh initialisation). Teacher reference: 16 layers, hidden 768, 12 heads x 64,
+# MLP 3072, 10240 positions/axis. Override anything, e.g. student.num_hidden_layers=6 student.hidden_size=512
 name: gemma4_vit
-out_dim: ${deploy_vision_dim}      # 768: tokens must drop into E2B/E4B's embed_vision unchanged
-patch_size: 16                     # 16 = Gemma patches + 3x3 pooling (teacher init ok) | 48 = 1 patch per token (9x cheaper)
+out_dim: ${deploy_vision_dim}      # 768: tokens feed the original E2B/E4B embed_vision unchanged
 hidden_size: 384
 num_hidden_layers: 8
 num_attention_heads: null          # null -> hidden_size / head_dim
-head_dim: 64                       # keep 64 for teacher init (whole heads are copied)
+head_dim: 64
 intermediate_size: null            # null -> 4 x hidden_size
-position_embedding_size: 256       # positions per axis; 256 x 16 px = 4096 px per side
-use_clipped_linears: false         # Gemma's activation clamps (teacher: true)
+position_embedding_size: 256       # positions per axis (256 x 16 px = 4096 px per side)
+use_clipped_linears: false
 rms_norm_eps: 1.0e-6
 rope_theta: 100.0
-init: teacher                      # teacher: weight selection from the exact E2B/E4B weights | random
-teacher_id: ${oc.select:teacher.model_id,google/gemma-4-E2B-it}
-layer_selection: uniform           # uniform | first | last | [0, 3, 7, ...] (teacher layers to keep)
-width_selection: uniform           # uniform | first | magnitude (residual dims)
-head_selection: uniform            # uniform | first | magnitude (per layer)
-mlp_selection: uniform             # uniform | first | magnitude (per layer)
-inherit_clip_ranges: true
-output_proj: auto                  # auto: linear iff hidden_size != out_dim
+attention_dropout: 0.0
 attn_implementation: sdpa
 grad_checkpointing: false

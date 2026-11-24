@@ -1,14 +1,12 @@
 output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
 deploy_vision_dim: 768
 include_teacher: true
-teacher_vision_config: {use_clipped_linears: true}   # = the exact E2B/E4B vision config (768-d x 16 layers)
+teacher_vision_config: {use_clipped_linears: true}   # architecture of the E2B/E4B vision tower (768-d x 16 layers); profiling needs no weights
 students:
   - gemma4_vit_l8_d768
   - gemma4_vit_l12_d512
   - gemma4_vit_l8_d384
   - gemma4_vit_l6_d256
-  - gemma4_vit_p48_l12_d512
-  - gemma4_vit_p48_l8_d384
   - compact_vit_s
   - coarse_patch_vit_s
   - multiplexed_vit_s_lowrank
@@ -23,6 +21,11 @@ students:
   - timm_tinyvit_11m
   - timm_starnet_s2
   - timm_convnextv2_nano
+  - timm_mambaout_femto
+  - timm_shvit_s2
+  - timm_efficientformerv2_s1
+  - timm_levit_128
+  - timm_efficientvit_m4
 token_budgets: [140, 280, 560]
 source_hw: [1080, 1440]           # camera frame (H, W) before Gemma's budget resize
 device: cpu

@@ -71,9 +71,9 @@ def _import_builtin_components() -> None:
     if _IMPORTED:
         return
     _IMPORTED = True
-    import onboard_vlm.data.datasets  # noqa: F401
-    import onboard_vlm.distill.losses  # noqa: F401
-    import onboard_vlm.students  # noqa: F401
+    import onboard_vlm.data.datasets
+    import onboard_vlm.distill.losses
+    import onboard_vlm.students
     import onboard_vlm.teachers  # noqa: F401
 
 

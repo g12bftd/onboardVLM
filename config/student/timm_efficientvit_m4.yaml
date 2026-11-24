@@ -1,0 +1,7 @@
+# EfficientViT-M4 (MSRA; fixed input) + position-query resampler head
+defaults:
+  - timm_spatial@_here_
+  - _self_
+model_name: efficientvit_m4.r224_in1k
+alignment: resample
+model_kwargs: {}

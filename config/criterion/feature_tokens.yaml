@@ -1,0 +1,3 @@
+# feature_distillation: final tokens, RMS-normalised MSE + cosine.
+- {name: token_feature, label: tok_mse, weight: 1.0, metric: mse, normalize: rms}
+- {name: token_feature, label: tok_cos, weight: 1.0, metric: cosine}

@@ -1,0 +1,17 @@
+# @package _global_
+# Fully offline sanity check of feature_distillation: python run_distill.py +experiment=debug/dryrun_feature
+experiment_name: dryrun_feature
+deploy_vision_dim: 48
+token_budgets: [70, 140]
+batch_size: 4
+layer_map: {1: 0, 3: 2}
+defaults:
+  - override /task: feature_distillation
+  - override /criterion: feature_full
+  - override /teacher: gemma4_tiny
+  - override /student: debug_tiny
+  - override /data_module: synthetic
+  - override /trainer: cpu_debug
+callbacks:
+  progress_bar: {refresh_rate: 1}
+  pipeline_logger: {every_n_steps: 1}

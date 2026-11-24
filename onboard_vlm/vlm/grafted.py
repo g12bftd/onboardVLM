@@ -95,7 +95,7 @@ class GraftedVLM(nn.Module):
     Args:
         vlm: the deployment VLM (e.g. ``google/gemma-4-E2B-it``).
         student: student encoder (``out_dim`` must equal the VLM's vision hidden size).
-        keep_teacher_tower: keep the original tower for :meth:`teacher_vision` (Stage-2 targets
+        keep_teacher_tower: keep the original tower for :meth:`teacher_vision` (logit-distillation targets
             from the same VLM, or teacher-vs-student evaluation in one process).
     """
 
@@ -119,37 +119,30 @@ class GraftedVLM(nn.Module):
         keep_teacher_tower: bool = False,
         attn_implementation: str = "sdpa",
         load_embed_vision: bool = True,
+        revision: str | None = None,
         **kw: Any,
     ) -> "GraftedVLM":
-        """Load the VLM and graft ``student_dir`` (a Stage-1 or Stage-2 export).
+        """Load the original Gemma 4 VLM (``from_pretrained``) and graft ``student_dir``.
 
-        If ``student_dir`` contains ``embed_vision.safetensors`` (Stage-2 export) and
-        ``load_embed_vision`` is set, the fine-tuned projection replaces the VLM's.
+        If ``student_dir`` contains ``embed_vision.safetensors`` (from the embed_vision ablation of
+        logit distillation) and ``load_embed_vision`` is set, it replaces the VLM's projection.
         """
         import os
 
         from safetensors.torch import load_file
-        from transformers import Gemma4ForConditionalGeneration
 
         from onboard_vlm.students.io import load_student
-
-        from onboard_vlm.teachers import hub
+        from onboard_vlm.teachers.gemma4 import load_gemma4_vlm
 
         torch_dtype = dtype if isinstance(dtype, torch.dtype) else getattr(torch, dtype)
-        spec = hub.resolve_teacher(vlm_id, kw.pop("revision", None))  # pinned E2B/E4B commit only
-        vlm = Gemma4ForConditionalGeneration.from_pretrained(
-            spec.model_id, revision=spec.revision, dtype=torch_dtype, attn_implementation=attn_implementation, **kw
-        )
-        if torch_dtype == torch.bfloat16:  # checkpoint dtype: the loaded tower must match the manifest
-            hub.verify_module_weights(vlm.model.vision_tower, vlm.model.embed_vision.embedding_projection.weight, spec.model_id)
+        vlm = load_gemma4_vlm(vlm_id, revision, torch_dtype, attn_implementation, **kw)
         student = None
         if student_dir is not None:
             student, _ = load_student(student_dir)
             student = student.to(torch_dtype)
             ev_path = os.path.join(student_dir, "embed_vision.safetensors")
             if load_embed_vision and os.path.isfile(ev_path):
-                ev = vlm.model.embed_vision
-                ev.load_state_dict({k: v.to(torch_dtype) for k, v in load_file(ev_path).items()})
+                vlm.model.embed_vision.load_state_dict({k: v.to(torch_dtype) for k, v in load_file(ev_path).items()})
         return cls(vlm, student, keep_teacher_tower=keep_teacher_tower)
 
     def embed_vision_state_dict(self) -> dict[str, torch.Tensor]:

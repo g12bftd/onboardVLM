@@ -1,15 +1,15 @@
-"""Build a sharded LMDB image corpus from egocentric *videos* (Ego4D, EPIC-KITCHENS, Ego-Exo4D ego
-views, HoloAssist, Aria Everyday Activities, ...).
+"""Build one corpus source from egocentric *videos* (Ego4D, EPIC-KITCHENS-100, ...).
 
-Frames are taken every 1/--fps seconds, near-duplicate consecutive frames (dHash within
---still_bits) are skipped, and videos / time spans used by benchmarks are excluded:
-``--blocklist`` (from make_eval_blocklist.py) lists Ego4D video uids (and optional second ranges)
-behind EgoSchema and EgoTextVQA-Indoor, plus dHashes of every benchmark frame.
+Frames are taken every 1/--fps seconds, frames within --still_bits (dHash) of the previous kept
+frame are skipped (static camera), and benchmark videos are excluded: ``--blocklist`` (from
+make_eval_blocklist.py) lists the Ego4D video uids behind EgoSchema / EgoTextVQA-Indoor, plus
+fingerprints of every benchmark frame. Frames then go through the same filters and storage as
+images (corpus_common.py).
 
 Example:
-  python make_datasets/corpus/make_frame_corpus.py --input_path /data/ego4d/v2/full_scale --fps 0.5 \\
+  python make_datasets/corpus/make_frame_corpus.py --input_path $RAW/ego4d/v2/video_540ss --fps 0.5 \\
       --name ego4d --output_path $CORPUS_ROOT/egocentric/ego4d --blocklist $CORPUS_ROOT/eval_blocklist.json \\
-      --worker_id 0 --num_workers 8
+      --min_side 360 --worker_id 0 --num_workers 32
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from corpus_common import ShardedCorpusWriter, add_common_args, take_slice  # noqa: E402
+from corpus_common import ShardedCorpusWriter, add_common_args, take_slice
 
-from onboard_vlm.data.hashing import dhash, hamming  # noqa: E402
+from onboard_vlm.data.hashing import dhash, hamming
 
 VID_EXT = (".mp4", ".mkv", ".webm", ".mov", ".avi")
 
@@ -79,11 +79,11 @@ def main() -> None:
                     continue
                 last = h
                 w.add(f"{vid}/{t:.2f}", img, {"video_id": vid, "t": round(t, 2)})
-                if args.limit is not None and w.stats["written"] >= args.limit:
+                if w.done():
                     break
         except Exception as e:  # corrupt video: report and continue
             print(f"[{args.name}] skip {path}: {e}", flush=True)
-        if args.limit is not None and w.stats["written"] >= args.limit:
+        if w.done():
             break
     print(f"[{args.name}] excluded {skipped} benchmark source videos")
     w.close()

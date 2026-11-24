@@ -2,9 +2,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
-outputs/
-multirun/
-data/
+/outputs/
+/multirun/
+/data/
 lightning_logs/
 *.ckpt
 .env
+.ruff_cache/

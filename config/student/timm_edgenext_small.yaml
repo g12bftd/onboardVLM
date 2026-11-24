@@ -1,7 +1,7 @@
-# EdgeNeXt-S (patchify stem: stride-16 tap)
+# EdgeNeXt-S (patchify stem; unmodified via input_rescale)
 defaults:
   - timm_spatial@_here_
   - _self_
 model_name: edgenext_small.usi_in1k
-alignment: tap16_conv3
+alignment: input_rescale
 model_kwargs: {}

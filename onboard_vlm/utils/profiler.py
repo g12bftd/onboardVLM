@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import functools
 import time
 import weakref
 from dataclasses import asdict, dataclass
@@ -105,11 +106,10 @@ def profile_encoder(
     for budget in token_budgets:
         hw = target_size(*source_hw, budget)
         if kind == "student":
-            x, m = _student_inputs(hw, device, dtype)
-            run = lambda: model(x, m)  # noqa: E731
+            run = functools.partial(model, *_student_inputs(hw, device, dtype))
         elif kind == "gemma":
             pv, pos = _gemma_inputs(hw, budget, device, dtype)
-            run = lambda: model(pixel_values=pv, pixel_position_ids=pos)  # noqa: E731
+            run = functools.partial(model, pixel_values=pv, pixel_position_ids=pos)
         else:
             raise ValueError(kind)
         run()  # warm-up (lazy init, cudnn autotune)

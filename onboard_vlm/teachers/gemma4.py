@@ -1,21 +1,25 @@
-"""The Gemma 4 E2B / E4B vision-encoder teacher, loaded byte-for-byte from the official checkpoints.
+"""Gemma 4 E2B / E4B teacher: the original Hugging Face model, loaded with ``from_pretrained``.
 
-* ``encode_vision`` runs the exact ``Gemma4VisionModel`` (167.4M params, shared by E2B and E4B) and
-  returns its unpadded ``[N, 768]`` soft tokens (post pooling, pre ``embed_vision``), plus
-  intermediate encoder-layer outputs captured with forward hooks. Encoder layers operate on 16-px
-  patches (9x more tokens than the output), so intermediate states are average-pooled 3x3 by patch
-  position (the teacher's own pooling rule, without its ``sqrt(D)`` output scaling).
-* ``project_to_lm`` applies the checkpoint's frozen ``embed_vision`` (scale-free RMSNorm + linear
-  projection to 1536 (E2B) / 2560 (E4B)): exactly what the language model consumes.
-* ``forward_vlm`` (``load="vlm"``) runs the full ``Gemma4ForConditionalGeneration``.
+* ``load="vision"`` (feature / embedding distillation): the full original
+  ``Gemma4ForConditionalGeneration`` is loaded, its ``model.vision_tower`` and
+  ``model.embed_vision`` are kept, and the language / audio parts are released.
+* ``load="vlm"`` (logit distillation): the whole original model is kept.
 
-With ``compute_dtype="bfloat16"`` (default) the outputs are bitwise identical to the official
-``get_image_features`` (``scripts/verify_gemma4_teacher.py --full_check``).
+``encode_vision`` returns the vision tower's unpadded ``[N, 768]`` soft tokens (exactly
+``get_image_features(...).last_hidden_state``) plus intermediate encoder-layer outputs captured
+with forward hooks. Encoder layers run on 16-px patches (9x more tokens than the output), so
+intermediate states are average-pooled 3x3 by patch position, which is the tower's own pooling
+rule without its ``sqrt(D)`` scaling.
+
+The vision tower is shared by all four checkpoints: on 2026-11-23 the 658 vision-tower tensors were
+byte-identical in E2B, E4B, base and ``-it``. The teacher choice only changes ``embed_vision``
+(768->1536 for E2B, 768->2560 for E4B) and, for logit distillation, the language model.
 """
 
 from __future__ import annotations
 
-import logging
+import gc
+import time
 from typing import Any, Sequence
 
 import torch
@@ -23,19 +27,50 @@ from torch import nn
 
 from onboard_vlm.interfaces import POOLING_KERNEL, TeacherInputs, TeacherVisionOutput, VisionTeacher
 from onboard_vlm.registry import register_teacher
-from onboard_vlm.teachers import hub
-from onboard_vlm.teachers.hub import UnsupportedTeacherError
+from onboard_vlm.utils.logging import describe_module, get_logger, stage
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
+
+# Supported teachers and their default revisions (commits at the time of writing, for
+# reproducibility). Override ``revision`` in the teacher YAML (e.g. ``main``) to change it.
+SUPPORTED_TEACHERS: dict[str, str] = {
+    "google/gemma-4-E2B-it": "4adf15748de9e1a0097b6274cee9c15836c41c37",
+    "google/gemma-4-E4B-it": "4ecc2ba63bcac23ba4a767fc87025b1450f84c9c",
+    "google/gemma-4-E2B": "433813a669639fd7eaa83155828e9000ed357d53",
+    "google/gemma-4-E4B": "11b8250ef59eb3ebc5dae7b21144d7b84f2c06dd",
+}
+
+
+class UnsupportedTeacherError(ValueError):
+    """Only the Gemma 4 E2B / E4B checkpoints are supported teachers."""
 
 
 class EncoderFreeTeacherError(UnsupportedTeacherError):
     """Raised for configs without a vision tower (e.g. the encoder-free ``gemma4_unified`` models)."""
 
 
-def pool_patch_states(
-    hidden: torch.Tensor, pixel_position_ids: torch.Tensor, k: int = POOLING_KERNEL
-) -> tuple[torch.Tensor, list[int]]:
+def resolve_revision(model_id: str, revision: str | None = None) -> str:
+    if model_id not in SUPPORTED_TEACHERS:
+        raise UnsupportedTeacherError(f"{model_id!r} is not supported; use one of {sorted(SUPPORTED_TEACHERS)}")
+    return revision or SUPPORTED_TEACHERS[model_id]
+
+
+def load_gemma4_vlm(model_id: str, revision: str | None = None, dtype: str | torch.dtype = "bfloat16", attn_implementation: str = "sdpa", **kw: Any):
+    """``Gemma4ForConditionalGeneration.from_pretrained`` of a supported checkpoint, with logging."""
+    from transformers import Gemma4ForConditionalGeneration
+
+    rev = resolve_revision(model_id, revision)
+    torch_dtype = dtype if isinstance(dtype, torch.dtype) else getattr(torch, dtype)
+    with stage(f"Loading original Gemma 4 weights {model_id}@{rev[:7]} ({torch_dtype}, attn={attn_implementation})", log):
+        t0 = time.perf_counter()
+        vlm = Gemma4ForConditionalGeneration.from_pretrained(
+            model_id, revision=rev, dtype=torch_dtype, attn_implementation=attn_implementation, **kw
+        ).eval()
+        log.info("     loaded %s in %.1fs", describe_module(vlm), time.perf_counter() - t0)
+    return vlm
+
+
+def pool_patch_states(hidden: torch.Tensor, pixel_position_ids: torch.Tensor, k: int = POOLING_KERNEL) -> tuple[torch.Tensor, list[int]]:
     """Average-pool patch-level states to soft tokens by patch position, then unpad.
 
     Matches ``Gemma4VisionPooler._avg_pool_by_positions`` (kernel index
@@ -48,150 +83,87 @@ def pool_patch_states(
         packed ``[N, D]`` tokens and per-image token counts.
     """
     b, p, d = hidden.shape
-    valid = (pixel_position_ids >= 0).all(-1)  # [B, P]
+    valid = (pixel_position_ids >= 0).all(-1)
     pos = pixel_position_ids.clamp(min=0)
-    gw = pos[..., 0].amax(dim=-1, keepdim=True) + 1  # patches per row, per image
-    idx = (pos[..., 0] // k) + (gw // k) * (pos[..., 1] // k)  # [B, P]
-    n_tok = valid.sum(-1) // (k * k)  # [B]
+    gw = pos[..., 0].amax(dim=-1, keepdim=True) + 1
+    idx = (pos[..., 0] // k) + (gw // k) * (pos[..., 1] // k)
+    n_tok = valid.sum(-1) // (k * k)
     length = p // (k * k)
     out = hidden.new_zeros((b, length, d), dtype=torch.float32)
-    src = hidden.float() * valid[..., None]
-    out.scatter_add_(1, idx[..., None].expand(-1, -1, d), src)
+    out.scatter_add_(1, idx[..., None].expand(-1, -1, d), hidden.float() * valid[..., None])
     out = (out / (k * k)).to(hidden.dtype)
     tok_mask = torch.arange(length, device=hidden.device)[None] < n_tok[:, None]
     return out[tok_mask], n_tok.tolist()
 
 
-def _random_init(config: Any, dtype: torch.dtype):
-    """Randomly initialised tower + embedder with the real module classes (tests / dry runs only)."""
-    from transformers.models.gemma4.modeling_gemma4 import Gemma4MultimodalEmbedder, Gemma4VisionModel
-
-    if getattr(config, "vision_config", None) is None:
-        raise EncoderFreeTeacherError("config has no vision_config (encoder-free model); it cannot be a vision teacher")
-    tower = Gemma4VisionModel._from_config(config.vision_config, dtype=dtype).eval()
-    embedder = Gemma4MultimodalEmbedder(config.vision_config, config.text_config).to(dtype)
-    return tower, embedder
-
-
 @register_teacher("gemma4")
 class Gemma4Teacher(VisionTeacher, nn.Module):
-    """Frozen Gemma 4 E2B / E4B vision-encoder teacher.
+    """Frozen original Gemma 4 E2B / E4B teacher.
 
     Args:
-        model_id: one of ``google/gemma-4-E2B-it`` (default), ``google/gemma-4-E4B-it``,
-            ``google/gemma-4-E2B``, ``google/gemma-4-E4B``. The vision tower is identical for all four;
-            the choice selects ``embed_vision`` (LM-space losses) and the VLM for ``load="vlm"``.
-        revision: must equal the pinned commit (``None`` = pinned).
-        load: ``"vision"`` (vision tower + embed_vision only, ~320 MB via range reads; Stage 1) or
-            ``"vlm"`` (full model; Stage-2 logits).
-        compute_dtype: ``"bfloat16"`` (bitwise-identical to the deployed VLM) or ``"float32"``
-            (lossless upcast of the same bf16 weights, higher-precision arithmetic).
-        verify: re-hash every loaded tensor against the bundled manifest (raises on any difference).
-        tiny / config: random tiny model with the real module classes (tests / dry runs only).
+        model_id: ``google/gemma-4-E2B-it`` (default), ``-E4B-it``, ``-E2B`` or ``-E4B``.
+        revision: Hub revision; ``None`` = the pinned default in :data:`SUPPORTED_TEACHERS`.
+        load: ``"vision"`` (keep vision tower + embed_vision) or ``"vlm"`` (keep everything).
+        dtype: weight dtype passed to ``from_pretrained`` (checkpoints are bf16).
+        attn_implementation: passed to ``from_pretrained``.
+        tiny: build a tiny randomly initialised model with the same classes (tests / dry runs only).
     """
 
     def __init__(
         self,
-        model_id: str | None = "google/gemma-4-E2B-it",
+        model_id: str = "google/gemma-4-E2B-it",
         revision: str | None = None,
         load: str = "vision",
-        compute_dtype: str | torch.dtype = "bfloat16",
-        verify: bool = True,
-        cache_dir: str | None = None,
+        dtype: str | torch.dtype = "bfloat16",
         attn_implementation: str = "sdpa",
         tiny: dict[str, Any] | None = None,
         config: Any | None = None,
-        dtype: str | None = None,  # deprecated alias of compute_dtype (kept for old configs)
     ):
         nn.Module.__init__(self)
         if load not in ("vision", "vlm"):
             raise ValueError(f"load must be 'vision' or 'vlm', got {load!r}")
-        compute = dtype or compute_dtype
-        compute = compute if isinstance(compute, torch.dtype) else getattr(torch, compute)
-        self.vlm: nn.Module | None = None
-        self.spec: hub.TeacherSpec | None = None
-
+        torch_dtype = dtype if isinstance(dtype, torch.dtype) else getattr(torch, dtype)
         if tiny is not None or config is not None:
-            from transformers import Gemma4Config
+            from transformers import Gemma4Config, Gemma4ForConditionalGeneration
 
             from onboard_vlm.utils.tiny import tiny_gemma4_config
 
             cfg = tiny_gemma4_config(**tiny) if tiny is not None else (Gemma4Config(**config) if isinstance(config, dict) else config)
-            if load == "vlm":
-                from transformers import Gemma4ForConditionalGeneration
-
-                if getattr(cfg, "vision_config", None) is None:
-                    raise EncoderFreeTeacherError("config has no vision_config")
-                self.vlm = Gemma4ForConditionalGeneration._from_config(cfg, dtype=compute).eval()
-                self.vision_tower, embedder = self.vlm.model.vision_tower, self.vlm.model.embed_vision
-            else:
-                self.vision_tower, embedder = _random_init(cfg, compute)
-            self.config, self.model_id = cfg, None
+            if getattr(cfg, "vision_config", None) is None:
+                raise EncoderFreeTeacherError("config has no vision_config (encoder-free model); it cannot be a vision teacher")
+            log.info("===> Building tiny random Gemma 4 teacher (tests / dry runs)")
+            vlm = Gemma4ForConditionalGeneration(cfg).to(torch_dtype).eval()
+            self.model_id, self.revision = None, None
         else:
-            if model_id is None:
-                raise ValueError("model_id is required (or tiny=... for tests)")
-            self.spec = hub.resolve_teacher(model_id, revision)
-            self.model_id = self.spec.model_id
-            if load == "vision":
-                from transformers import AutoConfig
-
-                tower, embed_w, _, _ = hub.load_exact_vision_tower(
-                    model_id, self.spec.revision, cache_dir, compute_dtype=torch.bfloat16, verify=verify, attn_implementation=attn_implementation
-                )
-                path = hub.fetch_vision_weights(model_id, self.spec.revision, cache_dir, verify=False)
-                self.config = AutoConfig.from_pretrained(str(path))
-                from transformers.models.gemma4.modeling_gemma4 import Gemma4MultimodalEmbedder
-
-                embedder = Gemma4MultimodalEmbedder(self.config.vision_config, self.config.text_config).to(torch.bfloat16)
-                embedder.embedding_projection.weight.data.copy_(embed_w)
-                self.vision_tower = tower
-            else:
-                from transformers import Gemma4ForConditionalGeneration
-
-                self.vlm = Gemma4ForConditionalGeneration.from_pretrained(
-                    model_id, revision=self.spec.revision, dtype=torch.bfloat16, attn_implementation=attn_implementation
-                ).eval()
-                self.config = self.vlm.config
-                self.vision_tower, embedder = self.vlm.model.vision_tower, self.vlm.model.embed_vision
-            if verify:
-                hub.verify_module_weights(self.vision_tower, embedder.embedding_projection.weight, self.model_id)
-            if compute != torch.bfloat16:
-                hub.cast_keep_rope_fp32(self.vlm if self.vlm is not None else self.vision_tower, compute)
-                embedder.to(compute)
-        self.embed_vision = embedder
-        self.embed_projection = embedder.embedding_projection
-
+            self.revision = resolve_revision(model_id, revision)
+            self.model_id = model_id
+            vlm = load_gemma4_vlm(model_id, self.revision, torch_dtype, attn_implementation)
+        self.config = vlm.config
+        self.vision_tower = vlm.model.vision_tower
+        self.embed_vision = vlm.model.embed_vision
+        if load == "vlm":
+            self.vlm: nn.Module | None = vlm
+        else:
+            self.vlm = None
+            del vlm  # keep only the vision tower + embed_vision; free the language model
+            gc.collect()
         vc = self.config.vision_config
         self.hidden_size = int(vc.hidden_size)
         self.num_layers = int(vc.num_hidden_layers)
-        self.patch_size = int(vc.patch_size)
         self.pooling_kernel_size = int(vc.pooling_kernel_size)
         self.lm_hidden_size = int(self.config.text_config.hidden_size)
         self.requires_grad_(False)
         self.eval()
+        log.info("     teacher vision tower: %s", describe_module(self.vision_tower))
+        log.info("     teacher embed_vision: %d -> %d (frozen)%s", self.hidden_size, self.lm_hidden_size,
+                 "" if load == "vlm" else " | language model released (load=vision)")
 
     def train(self, mode: bool = True) -> "Gemma4Teacher":  # always frozen / eval
         return super().train(False)
 
-    def _apply(self, fn, *args, **kwargs):  # .to(dtype) must never round the RoPE frequencies
-        out = super()._apply(fn, *args, **kwargs)
-        hub.restore_rope_fp32(self)
-        return out
-
-    @property
-    def text_hidden_size(self) -> int:
-        return self.lm_hidden_size
-
     @torch.no_grad()
     def encode_vision(self, inputs: TeacherInputs, layers: Sequence[int] = ()) -> TeacherVisionOutput:
-        """Teacher soft tokens.
-
-        Args:
-            inputs: Gemma-format patches (``pixel_values [B, P, 768]``, ``pixel_position_ids [B, P, 2]``).
-            layers: encoder layer indices (0-based) whose outputs to return, pooled to ``[N, D]``.
-        Returns:
-            :class:`TeacherVisionOutput` with ``tokens [N, 768]``.
-        """
+        """Teacher soft tokens ``[N, 768]`` (+ intermediate layers pooled to the 48-px grid)."""
         bad = [i for i in layers if not 0 <= i < self.num_layers]
         if bad:
             raise IndexError(f"teacher layers {bad} out of range [0, {self.num_layers})")
@@ -217,15 +189,8 @@ class Gemma4Teacher(VisionTeacher, nn.Module):
         return TeacherVisionOutput(tokens=out.last_hidden_state, intermediate_tokens=inter, image_token_lengths=list(inputs.image_token_lengths))
 
     def project_to_lm(self, tokens: torch.Tensor) -> torch.Tensor:
-        """Frozen ``embed_vision`` exactly as the VLM runs it (checkpoint dtype): ``[N, 768] -> [N, 1536 | 2560]``."""
-        w = self.embed_projection.weight
-        return self.embed_vision(tokens.to(w.dtype))
-
-    def project_to_lm_fp32(self, tokens: torch.Tensor) -> torch.Tensor:
-        """Same map in fp32 (for losses; differentiable w.r.t. ``tokens``, weights stay frozen)."""
-        x = tokens.float()
-        x = x * torch.pow(x.pow(2).mean(-1, keepdim=True) + self.embed_vision.eps, -0.5)  # as Gemma4RMSNorm
-        return torch.nn.functional.linear(x, self.embed_projection.weight.float())
+        """The original frozen ``embed_vision``: ``[N, 768] -> [N, 1536 | 2560]`` (differentiable w.r.t. ``tokens``)."""
+        return self.embed_vision(tokens.to(self.embed_vision.embedding_projection.weight.dtype))
 
     @torch.no_grad()
     def forward_vlm(self, **vlm_inputs: torch.Tensor) -> torch.Tensor:

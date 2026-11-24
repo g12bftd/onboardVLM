@@ -1,0 +1,10 @@
+# @package _global_
+# Distillation type 2: embed_vision(student tokens) <- embed_vision(teacher tokens), using the original
+# frozen embed_vision of the teacher checkpoint (LM-input space: 1536-d for E2B, 2560-d for E4B).
+task:
+  _target_: onboard_vlm.tasks.embedding_distillation.EmbeddingDistillationTask
+  _recursive_: false
+  vision_criterion: null            # optional extra terms on the 768-d vision tokens (list like config/criterion/*)
+  adapter: {kind: linear, force_final: false, force_layers: false}
+  optimizer: {lr: 1.0e-3, weight_decay: 0.05, betas: [0.9, 0.999]}
+  scheduler: {warmup_ratio: 0.05, min_lr_ratio: 0.01}

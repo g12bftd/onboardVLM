@@ -1,0 +1,4 @@
+# logit_distillation: temperature-scaled KL on the answer span (+ optional CE on the reference answer).
+name: grafted_logit_kd
+temperature: 1.0
+ce_weight: 0.0

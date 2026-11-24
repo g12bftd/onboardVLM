@@ -1,15 +1,15 @@
 # @package _global_
-# Depth x width x init grid of Gemma-architecture students (Hydra multirun):
+# Depth x width grid of smaller Gemma 4 vision encoders (Hydra multirun):
 #   python -u run_distill.py -m +experiment=sweeps/gemma4_vit_depth_width
-experiment_name: sweep_g4vit_L${student.num_hidden_layers}_D${student.hidden_size}_${student.init}
+experiment_name: sweep_g4vit_L${student.num_hidden_layers}_D${student.hidden_size}
 defaults:
+  - override /task: feature_distillation
+  - override /criterion: feature_tokens
   - override /teacher: gemma4_e2b
   - override /student: gemma4_vit
-  - override /criterion: stage1_tokens_lm
-  - override /data_module: stage1_general
+  - override /data_module: general_vision_lite
 hydra:
   sweeper:
     params:
       student.num_hidden_layers: 4,6,8,12
       student.hidden_size: 256,384,512,768
-      student.init: teacher,random
