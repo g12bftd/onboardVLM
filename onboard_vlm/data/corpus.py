@@ -1,6 +1,6 @@
 """Storage format of the general distillation corpus (``make_datasets/corpus``) and its dataset.
 
-Every source (CC12M, ImageNet-21k, Open Images, SA-1B, text-rich sets, Ego4D frames, ...) is
+Every source (CC12M, ImageNet-1k, Open Images, SA-1B, text-rich sets, Ego4D frames, ...) is
 converted to the same layout, so all of them are read by one dataset class::
 
     <corpus_root>/<source>/

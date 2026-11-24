@@ -6,7 +6,7 @@ defaults:
   - _self_
 train:
   - {name: image_corpus, root: "${corpus_root}/cc12m", max_shards: 8, group: web, weight: "${data_module.mixture.cc12m}"}
-  - {name: image_corpus, root: "${corpus_root}/imagenet21k", max_shards: 8, group: objects, weight: "${data_module.mixture.imagenet21k}"}
+  - {name: image_corpus, root: "${corpus_root}/${objects_source}", max_shards: 8, group: objects, weight: "${data_module.mixture.objects}"}
   - {name: image_corpus, root: "${corpus_root}/openimages", max_shards: 6, group: scenes, weight: "${data_module.mixture.openimages}"}
   - {name: image_corpus, root: "${corpus_root}/sa1b", max_shards: 4, group: scenes, weight: "${data_module.mixture.sa1b}"}
   - {name: image_corpus, root: "${corpus_root}/text_rich/pixmo_docs", max_shards: 2, group: text_rich, weight: "${data_module.mixture.pixmo_docs}"}

@@ -1,7 +1,7 @@
 """Build one corpus source (sharded LMDB, :mod:`onboard_vlm.data.corpus`) from downloaded images.
 
 Input formats (all sources in make_datasets/corpus/sources.yaml map to one of these):
-  --source webdataset --input_path "DIR/*.tar"        CC12M / ImageNet-21k wds shards, SA-1B tars,
+  --source webdataset --input_path "DIR/*.tar"        CC12M / ImageNet wds shards, SA-1B tars,
                                                      Open Images *.tar.gz (any tar, gz or not)
   --source parquet    --input_path "DIR/**/*.parquet" HF parquet exports (PixMo-Docs, SynthDoG, The Cauldron);
                       --image_column image|images     struct{bytes, path} or a list of them

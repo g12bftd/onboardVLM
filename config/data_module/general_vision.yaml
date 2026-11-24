@@ -4,7 +4,8 @@
 #
 #   one component off          data_module.mixture.ego4d=0
 #   one group off              data_module.drop_groups=[egocentric]       (sweep: +experiment=sweeps/corpus_mixture)
-#   different weights          data_module.mixture.cc12m=0.4 data_module.mixture.imagenet21k=0.05
+#   different weights          data_module.mixture.cc12m=0.4 data_module.mixture.objects=0.05
+#   ImageNet-21k as objects    objects_source=imagenet21k data_module.mixture.objects=0.20 data_module.mixture.cc12m=0.25
 #   bigger / other val split   corpus_split.val_fraction=0.005
 #   re-drawn splits            corpus_split.split_seed=1
 _target_: onboard_vlm.data.data_module.DistillDataModule
@@ -16,8 +17,8 @@ dataset_defaults:
   image_corpus: {val_fraction: "${corpus_split.val_fraction}", test_fraction: "${corpus_split.test_fraction}", split_seed: "${corpus_split.split_seed}", require_finalized: true}
 
 mixture:                 # sampling probability per component (sums to 1; renormalised if not)
-  cc12m: 0.25            # web, open-vocabulary                       ~10.9M
-  imagenet21k: 0.20      # object-centric, 21k classes                 ~13.7M
+  cc12m: 0.33            # web, open-vocabulary                       ~10.9M
+  objects: 0.12          # object-centric: ${objects_source} (ImageNet-1k 1.28M, default; ImageNet-21k 13.7M)
   openimages: 0.10       # multi-object scenes (box-annotated subset)   ~1.7M
   sa1b: 0.08             # high-resolution dense scenes                 ~1.1M
   pixmo_docs: 0.06       # text-rich: charts / tables / diagrams        ~0.26M
@@ -30,7 +31,7 @@ drop_groups: []
 
 train:
   - {name: image_corpus, root: "${corpus_root}/cc12m", group: web, weight: "${data_module.mixture.cc12m}"}
-  - {name: image_corpus, root: "${corpus_root}/imagenet21k", group: objects, weight: "${data_module.mixture.imagenet21k}"}
+  - {name: image_corpus, root: "${corpus_root}/${objects_source}", group: objects, weight: "${data_module.mixture.objects}"}
   - {name: image_corpus, root: "${corpus_root}/openimages", group: scenes, weight: "${data_module.mixture.openimages}"}
   - {name: image_corpus, root: "${corpus_root}/sa1b", group: scenes, weight: "${data_module.mixture.sa1b}"}
   - {name: image_corpus, root: "${corpus_root}/text_rich/pixmo_docs", group: text_rich, weight: "${data_module.mixture.pixmo_docs}"}
@@ -44,7 +45,7 @@ train:
 # (val/<group>/token_cos, ...). `limit` keeps an evenly spaced subset of each source's val split.
 val:
   - {name: image_corpus, split: val, limit: 1000, group: web, root: "${corpus_root}/cc12m"}
-  - {name: image_corpus, split: val, limit: 1000, group: objects, root: "${corpus_root}/imagenet21k"}
+  - {name: image_corpus, split: val, limit: 1000, group: objects, root: "${corpus_root}/${objects_source}"}
   - {name: image_corpus, split: val, limit: 500, group: scenes, root: "${corpus_root}/openimages"}
   - {name: image_corpus, split: val, limit: 500, group: scenes, root: "${corpus_root}/sa1b"}
   - {name: image_corpus, split: val, limit: 1000, group: text_rich, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}
@@ -54,7 +55,7 @@ val:
 # Reported once after training with the best checkpoint (run_distill.py final_test); never used for selection.
 test:
   - {name: image_corpus, split: test, limit: 5000, group: web, root: "${corpus_root}/cc12m"}
-  - {name: image_corpus, split: test, limit: 5000, group: objects, root: "${corpus_root}/imagenet21k"}
+  - {name: image_corpus, split: test, limit: 5000, group: objects, root: "${corpus_root}/${objects_source}"}
   - {name: image_corpus, split: test, limit: 5000, group: scenes, root: ["${corpus_root}/openimages", "${corpus_root}/sa1b"]}
   - {name: image_corpus, split: test, limit: 5000, group: text_rich, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}
   - {name: image_corpus, split: test, limit: 5000, group: egocentric, root: ["${corpus_root}/egocentric/ego4d", "${corpus_root}/egocentric/epic_kitchens"]}

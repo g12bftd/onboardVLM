@@ -11,7 +11,8 @@
 # Usage:  source scripts/paths.sh && bash make_datasets/build_corpus.sh [step...]
 #         (or RAW_ROOT=... LMDB_ROOT=... CORPUS_ROOT=... EVAL_ROOT=... WORKERS=32 bash make_datasets/build_corpus.sh [step...])
 #         Finished sources are skipped (<source>/.done); an unfinished one is rebuilt from an empty directory.
-#         (steps: blocklist text_rich openimages sa1b imagenet21k cc12m ego4d epic_kitchens finalize; default all)
+#         (steps: blocklist text_rich openimages sa1b imagenet1k cc12m ego4d epic_kitchens finalize; default all;
+#          imagenet21k is an optional alternative to imagenet1k: OBJECTS_SOURCE=imagenet21k)
 # The benchmark LMDBs ($LMDB_ROOT, make_datasets/build_all_lmdb.sh) and the evaluation image sets ($EVAL_ROOT,
 # make_datasets/eval_sets/build_eval_sets.py) must exist before step 1: the blocklist covers all of them.
 set -euo pipefail
@@ -59,6 +60,7 @@ step_openimages() {  # 16 tars -> at most 16 useful workers; ids of TextVQA val/
     --name openimages --output_path "$CORPUS_ROOT/openimages"
 }
 step_sa1b()        { img "$WORKERS" --source webdataset --input_path "$RAW_ROOT/sa1b/sa_*.tar" --name sa1b --output_path "$CORPUS_ROOT/sa1b"; }
+step_imagenet1k()  { img "$WORKERS" --source webdataset --input_path "$RAW_ROOT/imagenet1k/imagenet1k-train-*.tar" --name imagenet1k --output_path "$CORPUS_ROOT/imagenet1k"; }
 step_imagenet21k() { img "$WORKERS" --source webdataset --input_path "$RAW_ROOT/imagenet21k/imagenet22k-train-*.tar" --name imagenet21k --output_path "$CORPUS_ROOT/imagenet21k"; }
 step_cc12m()       { img "$WORKERS" --source webdataset --input_path "$RAW_ROOT/cc12m/cc12m-train-*.tar" --name cc12m --output_path "$CORPUS_ROOT/cc12m"; }
 step_ego4d() {
@@ -81,7 +83,7 @@ out_dir() {  # processed output of a source step ("" = not a source)
 }
 
 STEPS=("$@")
-[ ${#STEPS[@]} -eq 0 ] && STEPS=(blocklist text_rich openimages sa1b imagenet21k cc12m ego4d epic_kitchens finalize)
+[ ${#STEPS[@]} -eq 0 ] && STEPS=(blocklist text_rich openimages sa1b "${OBJECTS_SOURCE:-imagenet1k}" cc12m ego4d epic_kitchens finalize)
 for s in "${STEPS[@]}"; do
   echo "===> corpus step: $s ($(date))"
   out="$(out_dir "$s")"

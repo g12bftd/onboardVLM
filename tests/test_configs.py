@@ -91,7 +91,8 @@ def test_general_vision_matches_corpus_definition():
     for dm in ("general_vision", "general_vision_lite"):
         d = OmegaConf.to_container(_compose([f"data_module={dm}", "corpus_root=/C"]).data_module, resolve=True)
         roots = {t["root"][len("/C/"):] for t in d["train"] if t["name"] == "image_corpus"}
-        assert roots == {s["dir"] for s in spec["sources"]}, dm  # every built source is trained on, nothing else
+        assert roots == {s["dir"] for s in spec["sources"] if not s.get("optional")}, dm  # every required source is trained on
+        assert "imagenet1k" in roots  # default objects source (ImageNet-21k is the optional alternative)
         assert abs(sum(d["mixture"].values()) - 1.0) < 1e-9 and abs(sum(t["weight"] for t in d["train"]) - 1.0) < 1e-9
         assert d["dataset_defaults"]["image_corpus"]["require_finalized"] is True  # one split definition for every entry
         assert {t["group"] for t in d["val"]} == {t["group"] for t in d["train"]}  # every train group is monitored
@@ -112,7 +113,11 @@ def test_corpus_split_is_defined_once():
         gv = OmegaConf.to_container(compose("defaults", overrides=["data_module=general_vision"]).data_module.dataset_defaults.image_corpus, resolve=True)
         gen = OmegaConf.to_container(compose("generate_targets").corpus_split)
         fid = OmegaConf.to_container(compose("fidelity").corpus_split)
+        objects = {compose(n).objects_source for n in ("defaults", "generate_targets", "fidelity")}
+        swapped = OmegaConf.to_container(compose("defaults", overrides=["data_module=general_vision", "objects_source=imagenet21k", "corpus_root=/C"]).data_module, resolve=True)
     assert gen == fid == ref and {k: gv[k] for k in ref} == ref
+    assert objects == {"imagenet1k"}
+    assert any(t.get("root") == "/C/imagenet21k" and t.get("group") == "objects" for t in swapped["train"])
 
 
 def test_main_protocol_defaults():

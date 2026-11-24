@@ -101,7 +101,7 @@ make_datasets/
 run_distill.py  run_generate_targets.py            # training; teacher responses for logit distillation
 run_fidelity.py  run_probe.py  run_eval.py  run_lmms_eval.py  run_profile.py  run_cache_teacher.py
 scripts/  eval_general.sh  aggregate_results.py    # E3 general suite; paper tables with CIs
-scripts/  paths.sh  check_data.py  slurm/prepare_data.sbatch     # data layout, status, batch jobs
+scripts/  paths.sh  check_data.py  slurm/                       # data layout, status, batch jobs (submit_data_pipeline.sh)
 make_datasets/prepare_all.sh                       # every dataset: download -> processed, in order
 docs/  protocol.md  setup_cscs.md  design.md  corpus.md  datasets.md  metrics.md
 ```
@@ -210,11 +210,11 @@ All previously excluded families now work. Details and the shift-equivariance pr
 
 * **Benchmarks** (download → LMDB): [docs/datasets.md](docs/datasets.md). Official metrics:
   [docs/metrics.md](docs/metrics.md).
-* **OVLM-GV, the general-vision distillation corpus** (`data_module=general_vision`): about 30M raw
+* **OVLM-GV, the general-vision distillation corpus** (`data_module=general_vision`): about 18M raw
   images, filtered, benchmark-decontaminated and de-duplicated. The exact counts are written to the
   generated corpus card. Sources:
   * web: CC12M;
-  * objects: ImageNet-21k;
+  * objects: ImageNet-1k (ImageNet-21k optional);
   * scenes: Open Images V7 and SA-1B;
   * text-rich: PixMo-Docs, SynthDoG-en and The Cauldron documents / charts / UI;
   * egocentric: Ego4D and EPIC-KITCHENS-100 frames;

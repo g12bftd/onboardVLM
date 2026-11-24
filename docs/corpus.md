@@ -7,8 +7,8 @@ using only public, versioned sources, with every preprocessing step scripted and
 
 | group | source (directory under `$CORPUS_ROOT`) | covers | images (raw) | licence / access | weight | precedent |
 |---|---|---|---:|---|---:|---|
-| web | CC12M, pixparse snapshot (`cc12m`) | open-vocabulary web photos, illustrations, products | 10,968,539 | CC12M terms; HF, open | 0.25 | MobileCLIP (DataCompDR), CLIP-KD |
-| objects | ImageNet-21k fall11 (`imagenet21k`) | 21k fine-grained object categories | 13,673,551 | ImageNet terms (non-commercial research); HF, gated | 0.20 | TinyViT (IN-21k distillation) |
+| web | CC12M, pixparse snapshot (`cc12m`) | open-vocabulary web photos, illustrations, products | 10,968,539 | CC12M terms; HF, open | 0.33 | MobileCLIP (DataCompDR), CLIP-KD |
+| objects | ImageNet-1k train (`imagenet1k`; `objects_source`) | 1,000 object categories, object-centric photos | 1,281,167 | ImageNet terms (non-commercial research); HF, gated (auto-approved) | 0.12 | DeiT, TinyViT (ImageNet distillation) |
 | scenes | Open Images V7, box-annotated train subset (`openimages`) | cluttered multi-object scenes, spatial layout | 1,743,042 | images CC BY 2.0, annotations CC BY 4.0; S3, open | 0.10 | |
 | scenes | SA-1B, first 100 of 1,000 tars (`sa1b`) | high-resolution dense scenes | ~1.1M | SA-1B Research License; form | 0.08 | EfficientSAM / MobileSAM |
 | text-rich | PixMo-Docs (`text_rich/pixmo_docs`) | charts, tables, diagrams, documents | 255,261 | ODC-BY 1.0; HF, open | 0.06 | Molmo |
@@ -23,6 +23,27 @@ The weights are the sampling probabilities in `config/data_module/general_vision
 written to `$CORPUS_ROOT/CORPUS_CARD.md` and `corpus_manifest.json`. Report those numbers in the
 paper, not the raw ones above.
 
+## Why ImageNet-1k rather than ImageNet-21k
+
+The objects group adds clean, object-centric photos with fine-grained categories (breeds, species,
+artefacts) to the web, scene, text and egocentric data. ImageNet-1k is the default
+(`objects_source: imagenet1k`):
+
+* **No extra download.** The E2 probes need the same 154 GB of ImageNet-1k train tars anyway;
+  ImageNet-21k would add 1.19 TB to download and ~1 TB to store.
+* **It is a subset of ImageNet-21k.** The fall11 release contains the ImageNet-1k train images, so
+  what changes is breadth: 1k instead of 21k categories, and 1.28M instead of 13.7M images. CC12M
+  (10.9M open-vocabulary web images) already supplies much of the long tail.
+* **Standard precedent.** Encoder distillation on ImageNet-1k is the DeiT / TinyViT setting.
+* **No leakage.** ImageNet-1k val is an evaluation set (E1, E2) and is blocklisted from the corpus;
+  only train images enter it.
+
+Its weight is lower than the 21k variant's (0.12 instead of 0.20, with CC12M at 0.33). That keeps
+repetition at ~6 passes, comparable to the other components. Whether the objects group matters at
+all is measured by the leave-one-group-out ablation (`sweeps/corpus_mixture`). Switching to
+ImageNet-21k is one setting: `objects_source=imagenet21k` (download and build it first; the weights
+for that variant are in `general_vision.yaml`).
+
 ## Why this corpus is defensible
 
 * **Coverage, not just scale.** Each group exists because a capability of the teacher, and of the
@@ -36,7 +57,7 @@ paper, not the raw ones above.
   Each group can be removed in a leave-one-group-out ablation
   (`+experiment=sweeps/corpus_mixture`), so its contribution is measured, not assumed.
 * **Every source has precedent in encoder distillation.**
-  * ImageNet-21k: TinyViT.
+  * ImageNet: DeiT (ImageNet-1k), TinyViT (ImageNet-1k / 21k).
   * CC12M / DataComp-style web data: MobileCLIP and RADIO.
   * SA-1B: EfficientSAM and MobileSAM.
   * Ego4D: the standard egocentric pre-training source.
@@ -47,7 +68,7 @@ paper, not the raw ones above.
   SHA-256 digest over the sorted SHA-1 of every training image (`train_sha1_digest` in the manifest).
 * **Decontaminated against every evaluation set**, by content and by identity (see below), before
   de-duplication.
-* **Licences are tracked per source.** The corpus is for research. ImageNet-21k, SA-1B, Ego4D and
+* **Licences are tracked per source.** The corpus is for research. ImageNet, SA-1B, Ego4D and
   EPIC-KITCHENS are non-commercial / research-only, so a model distilled on the full mixture inherits
   those terms. The leave-one-group-out configs let you report a commercially cleaner variant if needed.
 
@@ -98,7 +119,7 @@ bash make_datasets/download/corpus/download_cc12m.sh          # pixparse/cc12m-w
 ```
 
 ```bash
-hf auth login && bash make_datasets/download/corpus/download_imagenet21k.sh   # accept the terms on the HF page first (~1.2 TB)
+hf auth login && bash make_datasets/download/corpus/download_imagenet1k.sh    # accept the terms on the HF page first (~154 GB; also used by the E2 probes)
 ```
 
 ```bash
@@ -117,7 +138,7 @@ Access steps:
 
 | source | what you need first |
 |---|---|
-| ImageNet-21k | accept the terms on huggingface.co/datasets/timm/imagenet-22k-wds |
+| ImageNet-1k | accept the terms on huggingface.co/datasets/timm/imagenet-1k-wds (approved automatically) |
 | SA-1B | accept the licence on ai.meta.com/datasets/segment-anything-downloads and save the link file |
 | Ego4D | sign the licence on ego4d-data.org, then `aws configure --profile ego4d` with the keys you receive |
 
@@ -149,7 +170,7 @@ Other overlaps the content fingerprints catch:
 ### 2. Build each source
 
 ```bash
-WORKERS=32 bash make_datasets/build_corpus.sh text_rich openimages sa1b imagenet21k cc12m ego4d epic_kitchens
+WORKERS=32 bash make_datasets/build_corpus.sh text_rich openimages sa1b imagenet1k cc12m ego4d epic_kitchens
 ```
 
 Every source goes through the same code (`make_datasets/corpus/corpus_common.py`). Images come from
@@ -259,13 +280,14 @@ python -u run_distill.py +experiment=feature/gemma4_vit_l8_d384_e2b data_module=
 python -u run_distill.py -m +experiment=sweeps/corpus_mixture                   # leave-one-group-out
 ```
 
-* **Sampling** is a fixed mixture (`MixtureSampler`). Each epoch draws `samples_per_epoch` (2M)
-  images: multinomially over components by weight, then uniformly without replacement within a
-  component. It is deterministic given seed + epoch, identical on every DDP rank, and partitioned by
-  Lightning's distributed wrapper. Unlike `WeightedRandomSampler`, it has no 2^24-category limit.
+* **Sampling** is a fixed mixture (`BucketedBatchSampler`, [protocol.md](protocol.md#4-training)).
+  Each epoch draws about `samples_per_epoch` (2M) images: every image's component is drawn by
+  weight, then an image is drawn uniformly without replacement within that component. The plan is
+  deterministic given seed + epoch, identical on every DDP rank, and each rank takes its share.
 * **Repetition**. At start-up the data module logs, per component, the draws per epoch and how many
   passes over its images that means. With the default 30 × 2M draws:
-  * web, objects and scenes: 1–4 passes;
+  * web and scenes: 2–4 passes;
+  * objects (ImageNet-1k): ~6 passes;
   * text-rich and egocentric: 4–14 passes;
   * target train splits: ~40 passes.
 
@@ -286,7 +308,8 @@ python -u run_distill.py -m +experiment=sweeps/corpus_mixture                   
 |---|---|
 | drop one source | `data_module.mixture.ego4d=0` |
 | drop a group | `data_module.drop_groups=[egocentric]` (all groups: `+experiment=sweeps/corpus_mixture`) |
-| reweight | `data_module.mixture.cc12m=0.4 data_module.mixture.imagenet21k=0.05` |
+| reweight | `data_module.mixture.cc12m=0.4 data_module.mixture.objects=0.05` |
+| ImageNet-21k as the objects source | `objects_source=imagenet21k data_module.mixture.objects=0.20 data_module.mixture.cc12m=0.25` (after `download:imagenet21k corpus:imagenet21k`) |
 | bigger val split | `corpus_split.val_fraction=0.005` |
 | re-draw the splits (variance across splits) | `corpus_split.split_seed=1` |
 | fewer images (fast sweeps) | `data_module=general_vision_lite` (~2.3M images, same splits) |
@@ -326,13 +349,14 @@ Benchmark accuracy alone does not show what was lost. Report:
 | item | size |
 |---|---|
 | raw downloads: CC12M | ~1.2 TB |
-| raw downloads: ImageNet-21k | ~1.2 TB |
+| raw downloads: ImageNet-1k train (shared with the E2 probes) | 154 GB |
+| raw downloads: ImageNet-21k (optional) | 1.19 TB |
 | raw downloads: Open Images | ~0.55 TB |
 | raw downloads: SA-1B (100 tars) | ~1 TB |
 | raw downloads: text-rich | ~0.1 TB (estimate) |
 | raw downloads: Ego4D 540ss, 1,000 h | ~1–1.5 TB (estimate) |
 | raw downloads: EPIC-KITCHENS-100 videos | several hundred GB (estimate) |
-| built corpus | ~3.5–4 TB |
+| built corpus | ~2.5–3 TB |
 
 Raw files can be deleted after step 2. Building is CPU-bound (JPEG decode, dHash, occasional
 re-encode) and scales linearly with `WORKERS`. Time one source with `--limit 10000` before

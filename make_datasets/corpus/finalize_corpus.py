@@ -1,7 +1,7 @@
 """Finalize the corpus: global de-duplication, per-source metadata, manifest and corpus card.
 
 Runs on the shard indices only (``shard_*.index.npz``: size, dHash, SHA-1 per image), so it takes
-minutes and a few GB of RAM for ~30M images. For every source directory listed in ``sources.yaml``
+minutes and a few GB of RAM for tens of millions of images. For every source directory listed in ``sources.yaml``
 (in order; an image seen earlier in the order wins):
 
 1. exact duplicates: identical SHA-1 of the stored bytes, within and across sources;
@@ -89,6 +89,9 @@ def main() -> None:
     dirs: list[tuple[dict, str]] = []
     for src in spec["sources"]:
         found = [d for d in expand(args.corpus_root, src["dir"]) if list_shards(d)]
+        if not found and src.get("optional"):
+            print(f"[finalize] optional source {src['dir']} not built (skipped)")
+            continue
         if not found:
             if args.allow_missing:
                 print(f"[finalize] missing source {src['dir']} (skipped)")

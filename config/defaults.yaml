@@ -34,6 +34,9 @@ token_budgets: ${input_domain.budgets}   # legacy padded-batch path (offline tea
 # Corpus train / val / test split (content-hashed in the loader; docs/corpus.md). generate_targets.yaml and
 # fidelity.yaml repeat it and tests/test_configs.py checks that all three agree.
 corpus_split: {val_fraction: 0.002, test_fraction: 0.002, split_seed: 0}
+# Object-centric corpus component: imagenet1k (default; the same download also serves the E2 probes) or
+# imagenet21k (optional, 1.2 TB). generate_targets.yaml and fidelity.yaml repeat it (checked by a test).
+objects_source: imagenet1k
 # Intermediate-layer distillation: {student_layer: teacher_layer} (empty = final tokens only).
 layer_map: {}
 

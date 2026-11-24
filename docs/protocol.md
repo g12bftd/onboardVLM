@@ -53,7 +53,7 @@ student is trained on and claimed on: every processor output for source aspect r
 
 ## 4. Training
 
-**Data.** OVLM-GV ([corpus.md](corpus.md)): 6 groups and ~30M raw images, decontaminated against
+**Data.** OVLM-GV ([corpus.md](corpus.md)): 6 groups and ~18M raw images, decontaminated against
 every evaluation image (§7) and de-duplicated. Train/val/test splits are a seeded content hash
 assigned by the loader (`corpus_split`: 0.2% val, 0.2% test).
 
@@ -201,6 +201,7 @@ resolution.
 | logit-distillation targets | `logit/gemma4_vit_l8_d384_e2b` vs `..._human_answers` |
 | E2B vs E4B embedding space | `embedding/gemma4_vit_l8_d384_{e2b,e4b}`, each evaluated in both VLMs |
 | split variance | `corpus_split.split_seed=1,2` |
+| ImageNet-1k vs ImageNet-21k as the objects source | `objects_source=imagenet21k` (weights in `general_vision.yaml`) |
 
 ## 9. Run order
 

@@ -70,7 +70,7 @@ def main() -> None:
 
     print(f"\nProbe sources: raw {raw}")
     n_in1k = len(glob.glob(os.path.join(raw, "imagenet1k", "imagenet1k-train-*.tar")))
-    ok(n_in1k > 0, "imagenet1k train tars", f"{n_in1k} tars")
+    ok(n_in1k == 1024, "imagenet1k train tars (probes + corpus)", f"{n_in1k} / 1024 tars")
     n_val = len(glob.glob(os.path.join(raw, "eval_sets", "imagenet1k_val", "imagenet1k-validation-*.tar")))
     ok(n_val > 0, "imagenet1k val tars", f"{n_val} tars")
     ade = os.path.join(raw, "eval_sets", "ade20k_val", "ADEChallengeData2016")
@@ -84,7 +84,8 @@ def main() -> None:
         n = sum(corpus_count(d) for d in dirs)
         done = bool(dirs) and all(os.path.isfile(os.path.join(d, ".done")) or os.path.isfile(os.path.join(os.path.dirname(d), ".done")) for d in dirs)
         finalized = bool(dirs) and all(os.path.isfile(os.path.join(d, "keep.npz")) for d in dirs)
-        ok(done and finalized, src["dir"], f"{n:,} images | built {done} | finalized {finalized}")
+        ok(done and finalized, src["dir"], f"{n:,} images | built {done} | finalized {finalized}" + ("  (optional)" if src.get("optional") else ""),
+           optional=bool(src.get("optional")))
     man = os.path.join(corpus, "corpus_manifest.json")
     if os.path.isfile(man):
         m = json.load(open(man))

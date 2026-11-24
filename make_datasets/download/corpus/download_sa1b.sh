@@ -6,6 +6,6 @@
 source "$(dirname "$0")/common.sh"
 SA1B_LINKS="${SA1B_LINKS:?set SA1B_LINKS to the link file from the SA-1B download page}"
 SA1B_TARS="${SA1B_TARS:-100}"
-tail -n +2 "$SA1B_LINKS" | sort | head -n "$SA1B_TARS" | while IFS=$'\t' read -r name url; do
-  http_get "$url" "$RAW_ROOT/sa1b/$name"
-done
+export -f http_get
+tail -n +2 "$SA1B_LINKS" | sort | head -n "$SA1B_TARS" | xargs -P "${DL_PARALLEL:-8}" -L 1 \
+  bash -c 'http_get "$1" "$RAW_ROOT/sa1b/$0"' 

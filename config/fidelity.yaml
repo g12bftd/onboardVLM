@@ -5,6 +5,7 @@ corpus_root: ${oc.env:ONBOARD_VLM_CORPUS,./data/corpus}
 eval_root: ${oc.env:ONBOARD_VLM_EVAL,./data/eval_sets}
 output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
 corpus_split: {val_fraction: 0.002, test_fraction: 0.002, split_seed: 0}
+objects_source: imagenet1k   # = config/defaults.yaml
 input_domain: {budgets: [70, 140, 280, 560, 1120], max_aspect: 4.0}
 
 run_name: student
@@ -24,7 +25,7 @@ dataset_defaults:          # merged under every set's dataset (one corpus split 
 sets:
   # in-distribution: the corpus test split of every group (never used for training or selection)
   - {name: corpus_web, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: "${corpus_root}/cc12m"}}
-  - {name: corpus_objects, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: "${corpus_root}/imagenet21k"}}
+  - {name: corpus_objects, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: "${corpus_root}/${objects_source}"}}
   - {name: corpus_scenes, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/openimages", "${corpus_root}/sa1b"]}}
   - {name: corpus_text_rich, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}}
   - {name: corpus_egocentric, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/egocentric/ego4d", "${corpus_root}/egocentric/epic_kitchens"]}}

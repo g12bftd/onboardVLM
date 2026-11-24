@@ -1,4 +1,4 @@
-# OVLM-GV: the general-vision distillation corpus (definition used by build_corpus.sh, finalize_corpus.py
+# OVLM-GV: the general-vision distillation corpus (sources marked optional are skipped when not built) (definition used by build_corpus.sh, finalize_corpus.py
 # and documented in docs/corpus.md). One entry per source directory under $CORPUS_ROOT, in de-duplication
 # priority order (an image found in several sources is kept in the first one listed).
 #
@@ -61,8 +61,16 @@ sources:
     images: 1120000
     build: --source webdataset --input_path "$RAW_ROOT/sa1b/sa_*.tar"
   # ---------------------------------------------------------------- object-centric
+  - dir: imagenet1k
+    group: objects
+    name: ImageNet-1k (ILSVRC-2012 train, timm/imagenet-1k-wds; val is blocklisted)
+    url: https://huggingface.co/datasets/timm/imagenet-1k-wds
+    license: ImageNet terms of access (non-commercial research)
+    images: 1281167
+    build: --source webdataset --input_path "$RAW_ROOT/imagenet1k/imagenet1k-train-*.tar"
   - dir: imagenet21k
     group: objects
+    optional: true   # alternative objects source (objects_source=imagenet21k): 13.7M images, 1.2 TB
     name: ImageNet-21k (fall11, timm/imagenet-22k-wds train)
     url: https://huggingface.co/datasets/timm/imagenet-22k-wds
     license: ImageNet terms of access (non-commercial research)

@@ -1,6 +1,6 @@
 # Sourced by the corpus download scripts.
 set -euo pipefail
-RAW_ROOT="${RAW_ROOT:-./data/raw}"
+export RAW_ROOT="${RAW_ROOT:-./data/raw}"
 mkdir -p "$RAW_ROOT"
 # Hugging Face downloads (resumable; set HF_TOKEN or run `hf auth login` for gated sets).
 hf_get() {  # hf_get <repo_id> <local_dir> <include_pattern>...   (each pattern becomes one --include)
