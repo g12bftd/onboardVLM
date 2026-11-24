@@ -2,7 +2,7 @@
 # Code lives in $HOME (not purged); data, outputs, caches and conda live on scratch, where raw downloads and
 # processed (LMDB) data are kept strictly apart.
 #
-#   $ONBOARD_VLM_CODE = $HOME/repos/onboardvlm       git clone of this repository
+#   $ONBOARD_VLM_CODE = the clone this file is in (on Alps: $HOME/repos/onboardVLM)
 #   $ONBOARD_VLM_ROOT = /capstor/scratch/cscs/$USER/onboardvlm
 #     miniforge3/                 conda installation (envs: onboardvlm, onboardvlm-lmms)
 #     data/raw/                   EXACTLY as downloaded: archives, tars, parquet, videos, repos (never modified)
@@ -17,7 +17,7 @@
 #     outputs/                    checkpoints, exported students, logs, evaluation results
 #     cache/                      Hugging Face hub (model weights, HF token), pip, torch
 #     logs/slurm/                 batch-job logs (scripts/slurm)
-export ONBOARD_VLM_CODE="${ONBOARD_VLM_CODE:-$HOME/repos/onboardvlm}"
+export ONBOARD_VLM_CODE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # always the clone this file is in
 export ONBOARD_VLM_ROOT="${ONBOARD_VLM_ROOT:-/capstor/scratch/cscs/${USER}/onboardvlm}"
 export DATA_ROOT="$ONBOARD_VLM_ROOT/data"
 export RAW_ROOT="$DATA_ROOT/raw"

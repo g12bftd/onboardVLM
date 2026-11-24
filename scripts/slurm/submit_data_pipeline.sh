@@ -36,6 +36,7 @@ done
 [ -n "$ACCOUNT" ] || [ -n "$DRY" ] || { echo "--account <project> is required" >&2; exit 2; }
 DLPART="${DLPART:-$PART}"
 CODE="$(cd "$(dirname "$0")/../.." && pwd)"
+export ONBOARD_VLM_CODE="$CODE"   # the jobs run this clone (sbatch passes the environment on)
 JOB="$CODE/scripts/slurm/prepare_data.sbatch"
 OBJECTS="${OBJECTS_SOURCE:-imagenet1k}"
 ME="${USER:-$(id -un)}"

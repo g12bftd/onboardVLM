@@ -11,7 +11,7 @@
 #SBATCH --time=12:00:00
 set -euo pipefail
 ROOT="${ONBOARD_VLM_ROOT:-/capstor/scratch/cscs/${USER}/onboardvlm}"
-CODE="${ONBOARD_VLM_CODE:-$HOME/repos/onboardvlm}"
+CODE="${ONBOARD_VLM_CODE:-$HOME/repos/onboardVLM}"   # set by scripts/paths.sh / the submit script
 source "${CONDA_BASE:-$ROOT/miniforge3}/etc/profile.d/conda.sh"
 conda activate onboardvlm
 cd "$CODE"

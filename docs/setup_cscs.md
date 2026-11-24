@@ -1,11 +1,11 @@
 # Setup on CSCS Alps
 
-The code lives in `$HOME` (`/users/$USER/repos/onboardvlm`). Data, outputs, caches and conda live on
+The code lives in `$HOME` (`/users/$USER/repos/onboardVLM`). Data, outputs, caches and conda live on
 scratch (`/capstor/scratch/cscs/$USER/onboardvlm`), with raw downloads strictly separated from
 processed data (`scripts/paths.sh`):
 
 ```
-/users/$USER/repos/onboardvlm/      git clone (code; $ONBOARD_VLM_CODE)
+/users/$USER/repos/onboardVLM/      git clone (code; $ONBOARD_VLM_CODE)
 /capstor/scratch/cscs/$USER/onboardvlm/          ($ONBOARD_VLM_ROOT)
 ├── miniforge3/                     conda (envs: onboardvlm, onboardvlm-lmms)
 ├── data/
@@ -30,7 +30,7 @@ periodically (see the CSCS documentation for the current policy): copy `data/pro
 ## 1. Clone
 
 ```bash
-mkdir -p /users/$USER/repos && git clone git@github.com:g12bftd/onboardVLM.git /users/$USER/repos/onboardvlm
+mkdir -p /users/$USER/repos && git clone git@github.com:g12bftd/onboardVLM.git /users/$USER/repos/onboardVLM
 ```
 
 ## 2. Conda environment (on a login node)
@@ -40,9 +40,9 @@ mkdir -p /capstor/scratch/cscs/$USER/onboardvlm && cd /capstor/scratch/cscs/$USE
 curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-$(uname -m).sh"
 bash "Miniforge3-Linux-$(uname -m).sh" -b -p /capstor/scratch/cscs/$USER/onboardvlm/miniforge3
 source /capstor/scratch/cscs/$USER/onboardvlm/miniforge3/etc/profile.d/conda.sh
-conda env create -f /users/$USER/repos/onboardvlm/environment.yml
+conda env create -f /users/$USER/repos/onboardVLM/environment.yml
 conda activate onboardvlm
-cd /users/$USER/repos/onboardvlm && source scripts/paths.sh
+cd /users/$USER/repos/onboardVLM && source scripts/paths.sh
 ```
 
 PyPI's torch wheels are CUDA 13 builds, for x86_64 and aarch64 / Grace-Hopper alike. Check the GPU
@@ -76,7 +76,7 @@ conda create -y --name onboardvlm-lmms --clone onboardvlm && conda run -n onboar
 ## 4. Data: every download and processing step as batch jobs
 
 ```bash
-cd /users/$USER/repos/onboardvlm && git pull && conda activate onboardvlm && source scripts/paths.sh
+cd /users/$USER/repos/onboardVLM && git pull && conda activate onboardvlm && source scripts/paths.sh
 bash scripts/slurm/submit_data_pipeline.sh --account <project> --dry-run      # prints the job graph
 bash scripts/slurm/submit_data_pipeline.sh --account <project>
 ```
