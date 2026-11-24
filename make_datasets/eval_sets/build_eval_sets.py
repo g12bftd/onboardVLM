@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 
@@ -38,6 +39,10 @@ def main() -> None:
         if args.only and name not in args.only:
             continue
         raw, out = os.path.join(args.raw_root, name), os.path.join(args.eval_root, name)
+        if os.path.isfile(os.path.join(out, ".done")):
+            print(f"[eval_sets] {name}: already built ({out}; delete it to rebuild)", flush=True)
+            continue
+        shutil.rmtree(out, ignore_errors=True)  # always build into an empty directory (no stale shards)
         os.makedirs(raw, exist_ok=True)
         if "url" in spec:
             archive = os.path.join(raw, os.path.basename(spec["url"]))
@@ -57,6 +62,7 @@ def main() -> None:
                                    "--worker_id", str(i), "--num_workers", str(args.workers)]) for i in range(args.workers)]
         if any(pr.wait() for pr in procs):
             raise RuntimeError(f"building {name} failed")
+        open(os.path.join(out, ".done"), "w").close()
         print(f"[eval_sets] {name} -> {out}", flush=True)
 
 

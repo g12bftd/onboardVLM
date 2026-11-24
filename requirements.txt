@@ -16,6 +16,9 @@ datasets>=3.0
 av>=12
 gdown>=5
 kaggle
+h5py      # NYUv2 (.mat v7.3)
+scipy     # NYUv2 splits.mat
+pyarrow   # parquet sources
 # tests
 pytest>=8
 scikit-learn

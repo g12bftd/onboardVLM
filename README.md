@@ -101,17 +101,23 @@ make_datasets/
 run_distill.py  run_generate_targets.py            # training; teacher responses for logit distillation
 run_fidelity.py  run_probe.py  run_eval.py  run_lmms_eval.py  run_profile.py  run_cache_teacher.py
 scripts/  eval_general.sh  aggregate_results.py    # E3 general suite; paper tables with CIs
-docs/  protocol.md  design.md  corpus.md  datasets.md  metrics.md
+scripts/  paths.sh  check_data.py  slurm/prepare_data.sbatch     # data layout, status, batch jobs
+make_datasets/prepare_all.sh                       # every dataset: download -> processed, in order
+docs/  protocol.md  setup_cscs.md  design.md  corpus.md  datasets.md  metrics.md
 ```
 
 ## Install
 
+On CSCS Alps (or any cluster): [docs/setup_cscs.md](docs/setup_cscs.md) covers the clone, the conda
+environment, the one-time access steps, and every dataset from download to processed format
+(`make_datasets/prepare_all.sh`). Raw and processed data are kept apart (`scripts/paths.sh`).
+
 ```bash
-pip install -r requirements.txt
+conda env create -f environment.yml && conda activate onboardvlm
 ```
 
 ```bash
-pip install -e .
+pip install torch torchvision && pip install -e ".[data,dev]"
 ```
 
 ## Running experiments (all YAML)

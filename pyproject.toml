@@ -25,7 +25,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-data = ["datasets>=3.0", "av>=12", "gdown>=5", "kaggle"]
+data = ["datasets>=3.0", "av>=12", "gdown>=5", "kaggle", "h5py", "scipy", "pyarrow", "pyyaml"]
+lmms = ["lmms-eval==0.7.4"]  # E3 general benchmarks; install into a separate env (docs/setup_cscs.md)
 dev = ["pytest>=8", "scikit-learn"]
 
 [tool.setuptools.packages.find]

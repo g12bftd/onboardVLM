@@ -121,7 +121,7 @@ class LMDBWriter:
         os.makedirs(root, exist_ok=True)
         self.path = os.path.join(root, f"{split}.lmdb")
         self.meta_path = os.path.join(root, f"{split}.meta.json")
-        self.env = lmdb.open(self.path, map_size=map_size, subdir=True, lock=True)
+        self.env = lmdb.open(self.path, map_size=map_size, subdir=True, lock=False)  # one writer process per LMDB by construction; no flock needed (Lustre-safe)
         self.txn = self.env.begin(write=True)
         self.dataset, self.split = dataset, split
         self.keys: list[str] = []

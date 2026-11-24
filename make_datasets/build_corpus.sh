@@ -8,7 +8,9 @@
 #   (train / val / test splits and mixture weights are NOT baked in: the loader assigns splits by a
 #    seeded content hash and the YAML sets the weights, so ablations never require a rebuild)
 #
-# Usage:  RAW_ROOT=/data/raw LMDB_ROOT=/data/lmdb CORPUS_ROOT=/data/corpus WORKERS=32 bash make_datasets/build_corpus.sh [step...]
+# Usage:  source scripts/paths.sh && bash make_datasets/build_corpus.sh [step...]
+#         (or RAW_ROOT=... LMDB_ROOT=... CORPUS_ROOT=... EVAL_ROOT=... WORKERS=32 bash make_datasets/build_corpus.sh [step...])
+#         Finished sources are skipped (<source>/.done); an unfinished one is rebuilt from an empty directory.
 #         (steps: blocklist text_rich openimages sa1b imagenet21k cc12m ego4d epic_kitchens finalize; default all)
 # The benchmark LMDBs ($LMDB_ROOT, make_datasets/build_all_lmdb.sh) and the evaluation image sets ($EVAL_ROOT,
 # make_datasets/eval_sets/build_eval_sets.py) must exist before step 1: the blocklist covers all of them.
@@ -69,9 +71,28 @@ step_epic_kitchens() {
 }
 step_finalize() { python -u $C/finalize_corpus.py --corpus_root "$CORPUS_ROOT" --sources_yaml $C/sources.yaml; }
 
+out_dir() {  # processed output of a source step ("" = not a source)
+  case "$1" in
+    text_rich) echo "$CORPUS_ROOT/text_rich" ;;
+    ego4d|epic_kitchens) echo "$CORPUS_ROOT/egocentric/$1" ;;
+    blocklist|finalize) echo "" ;;
+    *) echo "$CORPUS_ROOT/$1" ;;
+  esac
+}
+
 STEPS=("$@")
 [ ${#STEPS[@]} -eq 0 ] && STEPS=(blocklist text_rich openimages sa1b imagenet21k cc12m ego4d epic_kitchens finalize)
 for s in "${STEPS[@]}"; do
   echo "===> corpus step: $s ($(date))"
+  out="$(out_dir "$s")"
+  if [ "$s" = blocklist ] && [ -f "$BL" ] && [ -z "${FORCE_BLOCKLIST:-}" ]; then
+    echo "     $BL exists (FORCE_BLOCKLIST=1 to rebuild it; then rebuild every source)"; continue
+  fi
+  if [ -n "$out" ] && [ -f "$out/.done" ]; then
+    echo "     $out already built (delete it to rebuild)"; continue
+  fi
+  [ -n "$out" ] && rm -rf "$out"  # a source is always built into an empty directory (no stale shards)
   "step_$s"
+  [ -n "$out" ] && touch "$out/.done"
+  echo "<=== corpus step: $s done ($(date))"
 done

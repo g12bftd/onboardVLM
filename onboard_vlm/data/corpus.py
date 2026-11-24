@@ -57,7 +57,7 @@ class CorpusShardWriter:
     def __init__(self, root: str, shard: str, dataset: str, map_size: int = MAP_SIZE):
         os.makedirs(root, exist_ok=True)
         self.root, self.shard, self.dataset = root, shard, dataset
-        self.env = lmdb.open(os.path.join(root, f"{shard}.lmdb"), map_size=map_size, subdir=True, lock=True)
+        self.env = lmdb.open(os.path.join(root, f"{shard}.lmdb"), map_size=map_size, subdir=True, lock=False)  # one writer process per LMDB by construction; no flock needed (Lustre-safe)
         self.txn = self.env.begin(write=True)
         self.sizes: list[tuple[int, int]] = []
         self.dhash: list[int] = []

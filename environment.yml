@@ -1,0 +1,14 @@
+# conda env create -f environment.yml   (then install torch + this package with pip: docs/setup_cscs.md)
+# Only the interpreter and command-line tools come from conda-forge; Python packages come from pip so the
+# CUDA build of torch can be chosen for the machine (x86_64 or aarch64 / Grace-Hopper).
+name: onboardvlm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - git
+  - curl
+  - wget
+  - unzip
+  - file
