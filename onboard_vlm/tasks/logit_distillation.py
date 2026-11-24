@@ -115,20 +115,14 @@ class LogitDistillationTask(BaseDistillationTask):
         with self.grafted.teacher_vision():
             return self.grafted(**inputs).logits
 
-    def _step(self, batch: DistillBatch, split: str) -> torch.Tensor:
+    def _step(self, batch: DistillBatch, split: str, group: str | None = None) -> torch.Tensor:
         inputs, mask, targets = self._inputs(batch)
         t_logits = self._teacher_logits(inputs)
         s_logits = self.grafted(**inputs).logits
         loss, logs = self.criterion(s_logits, t_logits, mask, targets)
         logs["total"] = loss.detach()
-        self.log_losses(logs, split, len(batch))
+        self.log_losses(logs, split, len(batch), group)
         return loss
-
-    def training_step(self, batch: DistillBatch, batch_idx: int) -> torch.Tensor:
-        return self._step(batch, "train")
-
-    def validation_step(self, batch: DistillBatch, batch_idx: int) -> torch.Tensor:
-        return self._step(batch, "val")
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         trainable = {n for n, p in self.named_parameters() if p.requires_grad}

@@ -8,7 +8,13 @@ converted to the same layout, so all of them are read by one dataset class::
         shard_<worker>_<k>.meta.json    {"format": "corpus-v1", "dataset", "num_samples", "stats"}
         shard_<worker>_<k>.index.npz    sizes int32 [n, 2] (h, w) | dhash uint64 [n] | sha1 S20 [n]
         stats_<worker>.json             filter counts of the builder worker
-        keep.npz / holdout.npz          written by finalize_corpus.py: train / held-out bool mask per shard
+        keep.npz                        written by finalize_corpus.py: de-duplication mask per shard
+        dataset.json                    written by finalize_corpus.py: provenance, licence, counts
+
+Train / val / test splits are not stored: :func:`assign_split` derives them in the loader from a
+seeded hash of each image's fingerprint, so split sizes and seeds are config options (no rebuild),
+an image's split never depends on which other shards or sources are loaded (the lite corpus is a
+consistent subset of the full one), and duplicates always fall into the same split.
 
 Values are pickled :class:`~onboard_vlm.data.lmdb_io.VQARecord` dicts with the encoded image bytes
 and provenance in ``sample_id`` (``<source>/<original key>``) and ``meta``. Positional keys plus the
@@ -30,7 +36,8 @@ from onboard_vlm.data.lmdb_io import MAP_SIZE, VQARecord, decode_image, open_rea
 from onboard_vlm.registry import register_dataset
 
 FORMAT = "corpus-v1"
-SPLIT_FILES = {"train": "keep.npz", "holdout": "holdout.npz"}
+KEEP_FILE = "keep.npz"
+SPLITS = ("train", "val", "test")
 COMMIT_INTERVAL = 1000
 
 
@@ -99,6 +106,45 @@ def load_index(root: str, shard: str) -> dict[str, np.ndarray]:
         return {k: z[k] for k in z.files}
 
 
+def popcount64(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.uint64)
+    if hasattr(np, "bitwise_count"):  # numpy >= 2.0
+        return np.bitwise_count(x).astype(np.int64)
+    bits = np.unpackbits(x.view(np.uint8).reshape(*x.shape, 8), axis=-1)
+    return bits.sum(-1, dtype=np.int64)
+
+
+def degenerate_dhash(dhash: np.ndarray) -> np.ndarray:
+    """dHashes with < 8 or > 56 set bits come from low-texture images and collide across unrelated images."""
+    pc = popcount64(dhash)
+    return (pc < 8) | (pc > 56)
+
+
+def _mix64(x: np.ndarray) -> np.ndarray:
+    """splitmix64 finaliser: maps structured 64-bit keys to uniformly distributed ones."""
+    x = np.asarray(x, dtype=np.uint64)
+    with np.errstate(over="ignore"):
+        x = (x ^ (x >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        x = (x ^ (x >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    return x ^ (x >> np.uint64(31))
+
+
+def assign_split(dhash: np.ndarray, sha1: np.ndarray, val_fraction: float, test_fraction: float, seed: int = 0) -> np.ndarray:
+    """Split code per image (0 = train, 1 = val, 2 = test) from a seeded hash of its fingerprint.
+
+    The key is the perceptual hash (so re-encoded / resized copies share a split), or the first 8
+    bytes of the SHA-1 for degenerate dHashes. ``val_fraction`` / ``test_fraction`` are expected
+    shares; membership is a pure function of (image, fractions, seed).
+    """
+    if not (0 <= val_fraction and 0 <= test_fraction and val_fraction + test_fraction < 1):
+        raise ValueError(f"invalid split fractions val={val_fraction} test={test_fraction}")
+    dhash = np.asarray(dhash, dtype=np.uint64)
+    sha_key = np.ascontiguousarray(np.asarray(sha1, dtype="S20")).view(np.uint8).reshape(-1, 20)[:, :8].copy().view(">u8").ravel()
+    key = np.where(degenerate_dhash(dhash), sha_key.astype(np.uint64), dhash)
+    u = _mix64(key ^ _mix64(np.asarray([seed + 0x9E3779B97F4A7C15], dtype=np.uint64))).astype(np.float64) / 2.0**64
+    return np.where(u < val_fraction, 1, np.where(u < val_fraction + test_fraction, 2, 0)).astype(np.int8)
+
+
 def _expand_roots(root: str | Sequence[str]) -> list[str]:
     roots = [root] if isinstance(root, str) else list(root)
     out: list[str] = []
@@ -117,25 +163,31 @@ class ImageCorpusDataset(Dataset):
     Args:
         root: corpus directory, a glob (``.../text_rich/*``) or a list of either. Several roots form
             one mixture component (sampled proportionally to their size).
-        split: ``"train"`` (``keep.npz`` from ``finalize_corpus.py``: de-duplicated, held-out images
-            removed; every image if the corpus is not finalized and ``require_finalized`` is False) or
-            ``"holdout"`` (``holdout.npz``: per-source in-distribution validation images).
-        require_finalized: raise if a root was not finalized (set in the paper configs).
+        split: ``"train"``, ``"val"`` or ``"test"``; assigned in the loader by :func:`assign_split`.
+        val_fraction, test_fraction, split_seed: split definition. Use the same values for every
+            entry that reads a given root (``DistillDataModule.dataset_defaults`` does this and the
+            data module rejects conflicting values), otherwise splits would overlap.
+        require_finalized: raise if a root has no ``keep.npz`` (de-duplication) - set in the paper configs.
         max_shards: per root, use only the first N shards (quick experiments / lite corpus).
-        limit: truncate (debugging).
+        limit: keep at most this many images, evenly spaced over the whole split (bounded val / test).
     """
 
     def __init__(
         self,
         root: str | Sequence[str],
         split: str = "train",
+        val_fraction: float = 0.002,
+        test_fraction: float = 0.002,
+        split_seed: int = 0,
         require_finalized: bool = False,
         max_shards: int | None = None,
         limit: int | None = None,
     ):
-        if split not in SPLIT_FILES:
-            raise ValueError(f"split must be one of {sorted(SPLIT_FILES)}, got {split!r}")
+        if split not in SPLITS:
+            raise ValueError(f"split must be one of {SPLITS}, got {split!r}")
         self.roots, self.split = _expand_roots(root), split
+        code = SPLITS.index(split)
+        self.split_counts = dict.fromkeys(SPLITS, 0)
         self.shards: list[tuple[str, str]] = []  # (root, shard name)
         shard_ids, local, sizes = [], [], []
         self.num_raw = 0
@@ -143,16 +195,19 @@ class ImageCorpusDataset(Dataset):
             names = list_shards(r)[:max_shards]
             if not names:
                 raise FileNotFoundError(f"no shard_*.index.npz under {r} (build it with make_datasets/corpus/)")
-            mask_path = os.path.join(r, SPLIT_FILES[split])
-            if (require_finalized or split == "holdout") and not os.path.isfile(mask_path):
-                raise FileNotFoundError(f"{mask_path} missing: run make_datasets/corpus/finalize_corpus.py first")
-            keep = np.load(mask_path) if os.path.isfile(mask_path) else None
+            keep_path = os.path.join(r, KEEP_FILE)
+            if require_finalized and not os.path.isfile(keep_path):
+                raise FileNotFoundError(f"{keep_path} missing: run make_datasets/corpus/finalize_corpus.py first")
+            keep = np.load(keep_path) if os.path.isfile(keep_path) else None
             for name in names:
                 idx = load_index(r, name)
                 n = len(idx["sizes"])
                 self.num_raw += n
-                mask = keep[name] if keep is not None and name in keep.files else np.ones(n, dtype=bool)
-                pos = np.flatnonzero(mask).astype(np.int32)
+                kept = keep[name] if keep is not None and name in keep.files else np.ones(n, dtype=bool)
+                codes = assign_split(idx["dhash"], idx["sha1"], val_fraction, test_fraction, split_seed)
+                for c, sp in enumerate(SPLITS):
+                    self.split_counts[sp] += int((kept & (codes == c)).sum())
+                pos = np.flatnonzero(kept & (codes == code)).astype(np.int32)
                 shard_ids.append(np.full(len(pos), len(self.shards), dtype=np.int32))
                 local.append(pos)
                 sizes.append(idx["sizes"][pos])
@@ -160,8 +215,9 @@ class ImageCorpusDataset(Dataset):
         self.shard_of = np.concatenate(shard_ids) if shard_ids else np.zeros(0, np.int32)
         self.local = np.concatenate(local) if local else np.zeros(0, np.int32)
         self.sizes = np.concatenate(sizes) if sizes else np.zeros((0, 2), np.int32)
-        if limit is not None:
-            self.shard_of, self.local, self.sizes = self.shard_of[:limit], self.local[:limit], self.sizes[:limit]
+        if limit is not None and limit < len(self.local):
+            sel = np.linspace(0, len(self.local) - 1, limit).round().astype(np.int64)
+            self.shard_of, self.local, self.sizes = self.shard_of[sel], self.local[sel], self.sizes[sel]
 
     def __len__(self) -> int:
         return len(self.local)

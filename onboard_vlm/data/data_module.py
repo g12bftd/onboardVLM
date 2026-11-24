@@ -46,16 +46,29 @@ def _describe(cfg: dict[str, Any]) -> str:
     return ", ".join(f"{k}={cfg[k]}" for k in keys if k in cfg)
 
 
+SPLIT_KEYS = ("val_fraction", "test_fraction", "split_seed")
+
+
 class DistillDataModule(pl.LightningDataModule):
-    """
+    """Builds every dataset from YAML entries; weights, groups and splits are configuration only.
+
+    Each entry is one dataset (one benchmark LMDB, or one corpus source directory). Nothing about an
+    experiment is stored in the data files: the mixture weight of a train entry, the group it is
+    reported under and (for corpus sources) its train / val / test split all come from the config,
+    so ablations are CLI overrides (see ``docs/corpus.md``).
+
     Args:
-        train / val: lists of dataset configs (``{"name": "image_corpus", "root": ...}``, ...). A train
-            entry may carry ``weight`` (its mixture probability) and ``group`` (a label for logging).
-        collator / val_collator: kwargs for :class:`DualViewCollator`.
+        train / val / test: lists of dataset configs (``{"name": "image_corpus", "root": ...}``).
+            Every entry may carry ``group`` (a label). A train entry may carry ``weight`` (mixture
+            probability). Val / test entries with the same group are concatenated, and every group
+            gets its own dataloader, so metrics are logged per group (``val/<group>/...``) and overall.
+        dataset_defaults: ``{dataset_name: {key: value}}`` merged under every entry of that dataset
+            (entry keys win), e.g. one split definition for all ``image_corpus`` entries.
+        collator / val_collator: kwargs for :class:`DualViewCollator` (val_collator also serves test).
         text: text-builder config for logit distillation (see :func:`build_text_builder`).
         mixture: named component weights that ``train`` entries reference by interpolation
             (``weight: ${data_module.mixture.cc12m}``); only logged here.
-        drop_groups: groups whose entries get weight 0 (corpus ablations, e.g. ``[egocentric]``).
+        drop_groups: train groups whose entries get weight 0 (e.g. ``[egocentric]``).
         mix_weights: relative sampling weight per training dataset; overrides per-entry ``weight``.
             ``None`` and no ``weight`` keys = uniform over the concatenation (proportional to size).
         samples_per_epoch: epoch length when weights are used (default: total size).
@@ -66,6 +79,8 @@ class DistillDataModule(pl.LightningDataModule):
         self,
         train: Sequence[dict[str, Any]],
         val: Sequence[dict[str, Any]] | None = None,
+        test: Sequence[dict[str, Any]] | None = None,
+        dataset_defaults: dict[str, dict[str, Any]] | None = None,
         collator: dict[str, Any] | None = None,
         val_collator: dict[str, Any] | None = None,
         text: dict[str, Any] | None = None,
@@ -81,9 +96,15 @@ class DistillDataModule(pl.LightningDataModule):
         seed: int = 0,
     ):
         super().__init__()
-        train, val, collator, val_collator, text, mixture = map(to_plain, (train, val, collator, val_collator, text, mixture))
+        train, val, test, defaults, collator, val_collator, text, mixture = map(
+            to_plain, (train, val, test, dataset_defaults, collator, val_collator, text, mixture)
+        )
         self.mixture = mixture
-        self.train_cfgs, self.val_cfgs = [dict(c) for c in train], list(val or [])
+        self.dataset_defaults = dict(defaults or {})
+        merge = lambda c: {**self.dataset_defaults.get(c["name"], {}), **c}  # noqa: E731
+        self.train_cfgs = [merge(c) for c in train]
+        self.val_cfgs, self.test_cfgs = [merge(c) for c in val or []], [merge(c) for c in test or []]
+        _check_corpus_splits(self.train_cfgs, self.val_cfgs, self.test_cfgs)
         entry_w = [c.pop("weight", None) for c in self.train_cfgs]
         self.groups = [c.pop("group", None) for c in self.train_cfgs]
         if mix_weights is None and any(w is not None for w in entry_w):
@@ -106,10 +127,20 @@ class DistillDataModule(pl.LightningDataModule):
         self.mix_weights = to_plain(mix_weights)
         self.samples_per_epoch = samples_per_epoch
         self.bucket_by_size = bucket_by_size
-        self.train_set = self.val_set = None
+        self.train_set = None
+        self.val_sets: dict[str, ConcatDataset] = {}
+        self.test_sets: dict[str, ConcatDataset] = {}
         self._is_setup = False
 
-    def setup(self, stage: str | None = None) -> None:  # noqa: ARG002  (Lightning passes stage=)
+    @property
+    def val_groups(self) -> list[str]:
+        return list(self.val_sets)
+
+    @property
+    def test_groups(self) -> list[str]:
+        return list(self.test_sets)
+
+    def setup(self, stage: str | None = None) -> None:
         if self._is_setup:
             return
         with log_stage("Setting up datasets", log):
@@ -123,24 +154,32 @@ class DistillDataModule(pl.LightningDataModule):
                 ds = build_dataset(c)
                 w = f" | weight {self.mix_weights[i]}" if self.mix_weights else ""
                 g = f"[{self.groups[i]}] " if self.groups[i] else ""
-                log.info("     train[%d] %s%s -> %s samples%s", i, g, _describe(c), f"{len(ds):,}", w)
+                log.info("     train[%d] %s%s -> %s samples%s%s", i, g, _describe(c), f"{len(ds):,}", w, _split_info(ds))
                 self.train_parts.append(ds)
             self.train_set = ConcatDataset(self.train_parts)
             self.train_collate = DualViewCollator(**self.collator_cfg, text_builder=text_builder, seed=self.seed)
             log.info("     train total %s samples | collator %s", f"{len(self.train_set):,}", dict(self.collator_cfg))
             if self.mix_weights is not None:
                 self._log_mixture()
-            if self.val_cfgs:
-                parts = []
-                for i, c in enumerate(self.val_cfgs):
-                    ds = build_dataset(c)
-                    log.info("     val[%d]   %s -> %s samples", i, _describe(c), f"{len(ds):,}")
-                    parts.append(ds)
-                self.val_set = ConcatDataset(parts)
-                self.val_collate = DualViewCollator(**self.val_collator_cfg, text_builder=text_builder, seed=self.seed + 1)
-            log.info("     batch_size=%d (val %d) | num_workers=%d | mix_weights=%s | samples_per_epoch=%s",
-                     self.batch_size, self.val_batch_size, self.num_workers, self.mix_weights, self.samples_per_epoch)
+            self.val_sets = self._build_eval_sets("val", self.val_cfgs)
+            self.test_sets = self._build_eval_sets("test", self.test_cfgs)
+            self.eval_collate = DualViewCollator(**self.val_collator_cfg, text_builder=text_builder, seed=self.seed + 1)
+            log.info("     batch_size=%d (eval %d) | num_workers=%d | samples_per_epoch=%s",
+                     self.batch_size, self.val_batch_size, self.num_workers, self.samples_per_epoch)
         self._is_setup = True
+
+    def _build_eval_sets(self, split: str, cfgs: list[dict[str, Any]]) -> dict[str, ConcatDataset]:
+        parts: dict[str, list] = {}
+        for i, c in enumerate(cfgs):
+            c = dict(c)
+            group = c.pop("group", None) or f"{split}{i}"
+            ds = build_dataset(c)
+            log.info("     %s[%d] [%s] %s -> %s samples", split, i, group, _describe(c), f"{len(ds):,}")
+            parts.setdefault(group, []).append(ds)
+        sets = {g: ConcatDataset(p) for g, p in parts.items()}
+        if sets:
+            log.info("     %s groups: %s", split, ", ".join(f"{g}={len(d):,}" for g, d in sets.items()))
+        return sets
 
     def _log_mixture(self) -> None:
         if len(self.mix_weights) != len(self.train_parts):
@@ -171,7 +210,35 @@ class DistillDataModule(pl.LightningDataModule):
             return DataLoader(self.train_set, batch_size=self.batch_size, sampler=sampler, drop_last=True, collate_fn=self.train_collate, **self._loader_kwargs())
         return DataLoader(self.train_set, batch_size=self.batch_size, shuffle=True, drop_last=True, collate_fn=self.train_collate, **self._loader_kwargs())
 
-    def val_dataloader(self) -> DataLoader | list:
-        if self.val_set is None:
-            return []
-        return DataLoader(self.val_set, batch_size=self.val_batch_size, shuffle=False, collate_fn=self.val_collate, **self._loader_kwargs())
+    def _eval_loaders(self, sets: dict[str, ConcatDataset]) -> list[DataLoader]:
+        return [DataLoader(d, batch_size=self.val_batch_size, shuffle=False, collate_fn=self.eval_collate, **self._loader_kwargs()) for d in sets.values()]
+
+    def val_dataloader(self) -> list[DataLoader]:
+        return self._eval_loaders(self.val_sets)
+
+    def test_dataloader(self) -> list[DataLoader]:
+        return self._eval_loaders(self.test_sets)
+
+
+def _split_info(ds: Any) -> str:
+    counts = getattr(ds, "split_counts", None)
+    return f" | split {ds.split} of {counts}" if counts else ""
+
+
+def _check_corpus_splits(train: list[dict], val: list[dict], test: list[dict]) -> None:
+    """Corpus splits are computed in the loader, so two entries reading the same source with different
+    split definitions (or a val entry reading the train split) would leak. Reject both."""
+    seen: dict[str, tuple] = {}
+    for expected, cfgs in (("train", train), ("val", val), ("test", test)):
+        for c in cfgs:
+            if c.get("name") != "image_corpus":
+                continue
+            split = c.get("split", "train")
+            if split != expected:
+                raise ValueError(f"an image_corpus entry in `{expected}` reads split {split!r}: {c.get('root')}")
+            definition = tuple(c.get(k) for k in SPLIT_KEYS)
+            roots = c["root"] if isinstance(c["root"], (list, tuple)) else [c["root"]]
+            for r in roots:
+                if seen.setdefault(str(r), definition) != definition:
+                    raise ValueError(f"conflicting split definitions {SPLIT_KEYS} for {r}: {seen[str(r)]} vs {definition}; "
+                                     "set them once in data_module.dataset_defaults.image_corpus")

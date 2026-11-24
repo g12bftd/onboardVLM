@@ -181,8 +181,10 @@ All previously excluded families now work. Details and the shift-equivariance pr
   * egocentric: Ego4D and EPIC-KITCHENS-100 frames;
   * the target train splits.
 
-  Everything is sampled as a fixed, ablatable mixture. Sources, licences, download, preprocessing,
-  LMDB format, decontamination, de-duplication and held-out split are in
+  Each source is preprocessed once into its own LMDB dataset. Mixture weights, groups and the
+  train / val / test split are set in YAML and applied by the loader, so every ablation is a CLI
+  override with no rebuild. Benchmarks keep their official splits. Sources, licences, download, preprocessing,
+  LMDB format, decontamination, de-duplication and the loader-side train / val / test split are in
   [docs/corpus.md](docs/corpus.md). Build it with:
 
 ```bash
@@ -205,7 +207,7 @@ RAW_ROOT=/data/raw LMDB_ROOT=/data/lmdb CORPUS_ROOT=/data/corpus WORKERS=32 bash
 pytest
 ```
 
-224 tests, CPU-only and offline (tiny random Gemma 4). They cover:
+227 tests, CPU-only and offline (tiny random Gemma 4). They cover:
 
 * geometry parity with `Gemma4ImageProcessor`;
 * teacher/student shape parity for every family;
@@ -215,5 +217,5 @@ pytest
 * all three tasks training, with the logit task leaving the VLM byte-identical;
 * real-time logging;
 * the corpus pipeline: filters, decontamination by content / id / video, global de-duplication,
-  held-out split and the mixture sampler;
+  content-hashed train / val / test splits, leak checks, per-group metrics and the mixture sampler;
 * every YAML preset and experiment, plus grafted `generate()` for images and video.

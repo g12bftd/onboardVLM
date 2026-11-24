@@ -1,17 +1,18 @@
 # OVLM-GV-lite: the first shards of every OVLM-GV component (~2.3M images) for sweeps and ablations.
-# Same mixture, filters, de-duplication and held-out split as general_vision.yaml.
+# Same mixture, filters, de-duplication, split definition and val / test sets as general_vision.yaml
+# (splits are content-hashed, so no lite training image is ever in the full corpus' val / test).
 defaults:
   - general_vision@_here_
   - _self_
 train:
-  - {name: image_corpus, root: "${corpus_root}/cc12m", max_shards: 8, require_finalized: true, group: web, weight: "${data_module.mixture.cc12m}"}
-  - {name: image_corpus, root: "${corpus_root}/imagenet21k", max_shards: 8, require_finalized: true, group: objects, weight: "${data_module.mixture.imagenet21k}"}
-  - {name: image_corpus, root: "${corpus_root}/openimages", max_shards: 6, require_finalized: true, group: scenes, weight: "${data_module.mixture.openimages}"}
-  - {name: image_corpus, root: "${corpus_root}/sa1b", max_shards: 4, require_finalized: true, group: scenes, weight: "${data_module.mixture.sa1b}"}
-  - {name: image_corpus, root: "${corpus_root}/text_rich/pixmo_docs", max_shards: 2, require_finalized: true, group: text_rich, weight: "${data_module.mixture.pixmo_docs}"}
-  - {name: image_corpus, root: "${corpus_root}/text_rich/synthdog_en", max_shards: 2, require_finalized: true, group: text_rich, weight: "${data_module.mixture.synthdog_en}"}
-  - {name: image_corpus, root: "${corpus_root}/text_rich/cauldron/*", max_shards: 1, require_finalized: true, group: text_rich, weight: "${data_module.mixture.cauldron}"}
-  - {name: image_corpus, root: "${corpus_root}/egocentric/ego4d", max_shards: 6, require_finalized: true, group: egocentric, weight: "${data_module.mixture.ego4d}"}
-  - {name: image_corpus, root: "${corpus_root}/egocentric/epic_kitchens", max_shards: 2, require_finalized: true, group: egocentric, weight: "${data_module.mixture.epic_kitchens}"}
+  - {name: image_corpus, root: "${corpus_root}/cc12m", max_shards: 8, group: web, weight: "${data_module.mixture.cc12m}"}
+  - {name: image_corpus, root: "${corpus_root}/imagenet21k", max_shards: 8, group: objects, weight: "${data_module.mixture.imagenet21k}"}
+  - {name: image_corpus, root: "${corpus_root}/openimages", max_shards: 6, group: scenes, weight: "${data_module.mixture.openimages}"}
+  - {name: image_corpus, root: "${corpus_root}/sa1b", max_shards: 4, group: scenes, weight: "${data_module.mixture.sa1b}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/pixmo_docs", max_shards: 2, group: text_rich, weight: "${data_module.mixture.pixmo_docs}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/synthdog_en", max_shards: 2, group: text_rich, weight: "${data_module.mixture.synthdog_en}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/cauldron/*", max_shards: 1, group: text_rich, weight: "${data_module.mixture.cauldron}"}
+  - {name: image_corpus, root: "${corpus_root}/egocentric/ego4d", max_shards: 6, group: egocentric, weight: "${data_module.mixture.ego4d}"}
+  - {name: image_corpus, root: "${corpus_root}/egocentric/epic_kitchens", max_shards: 2, group: egocentric, weight: "${data_module.mixture.epic_kitchens}"}
   - {name: target_train, data_root: "${data_root}", group: target, weight: "${data_module.mixture.target}"}
 samples_per_epoch: 500000

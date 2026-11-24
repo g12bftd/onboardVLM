@@ -2,8 +2,11 @@
 _target_: onboard_vlm.data.data_module.DistillDataModule
 train:
   - {name: synthetic, num_samples: 64, min_side: 96, max_side: 640}
-val:
-  - {name: synthetic, num_samples: 16, seed: 1}
+val:                      # two groups -> per-group metrics val/a/..., val/b/... + overall val/...
+  - {name: synthetic, num_samples: 12, seed: 1, group: a}
+  - {name: synthetic, num_samples: 8, seed: 2, group: b}
+test:
+  - {name: synthetic, num_samples: 8, seed: 3, group: a}
 collator: {token_budgets: "${token_budgets}", train: true}
 val_collator: {token_budgets: [70], train: false}
 batch_size: ${batch_size}

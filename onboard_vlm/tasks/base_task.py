@@ -66,6 +66,7 @@ class BaseDistillationTask(pl.LightningModule):
         self.optimizer_cfg = dict(to_plain(optimizer) or {})
         self.scheduler_cfg = dict(to_plain(scheduler) or {})
         self._teacher: list[nn.Module] = []  # kept outside the module tree: never saved / optimised / DDP-wrapped
+        self._eval_sums: dict[str, dict[str, list[float]]] = {}
         log.info("     distillation type: %s (%s)", self.distillation_type, type(self).__name__)
 
     # -- construction ---------------------------------------------------------------------------
@@ -118,10 +119,62 @@ class BaseDistillationTask(pl.LightningModule):
         return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "step"}}
 
     # -- logging --------------------------------------------------------------------------------
-    def log_losses(self, logs: Mapping[str, torch.Tensor], split: str, batch_size: int) -> None:
-        self.log_dict({f"{split}/{k}": v for k, v in logs.items()}, batch_size=batch_size, prog_bar=split == "val", sync_dist=split == "val")
-        if split == "val" and "total" in logs:
-            self.log("val_loss", logs["total"], batch_size=batch_size, sync_dist=True)
+    # -- steps and logging --------------------------------------------------------------------
+    def _step(self, batch: DistillBatch, split: str, group: str | None = None) -> torch.Tensor:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+    def training_step(self, batch: DistillBatch, batch_idx: int) -> torch.Tensor:
+        return self._step(batch, "train")
+
+    def validation_step(self, batch: DistillBatch, batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
+        return self._step(batch, "val", self._eval_group("val", dataloader_idx))
+
+    def test_step(self, batch: DistillBatch, batch_idx: int, dataloader_idx: int = 0) -> torch.Tensor:
+        return self._step(batch, "test", self._eval_group("test", dataloader_idx))
+
+    def _eval_group(self, split: str, dataloader_idx: int) -> str | None:
+        dm = getattr(self.trainer, "datamodule", None) if self._trainer is not None else None
+        groups = getattr(dm, f"{split}_groups", None)
+        return groups[dataloader_idx] if groups and dataloader_idx < len(groups) else None
+
+    def log_losses(self, logs: Mapping[str, torch.Tensor], split: str, batch_size: int, group: str | None = None) -> None:
+        """Train: per-step ``train/<k>``. Val / test: ``<split>/<group>/<k>`` per group (one dataloader
+        each), plus ``<split>/<k>`` and ``val_loss`` over all groups (image-weighted) at epoch end."""
+        if split == "train":
+            self.log_dict({f"train/{k}": v for k, v in logs.items()}, batch_size=batch_size)
+            return
+        if group is not None:
+            self.log_dict({f"{split}/{group}/{k}": v for k, v in logs.items()}, batch_size=batch_size, sync_dist=True, add_dataloader_idx=False)
+        acc = self._eval_sums.setdefault(split, {})
+        for k, v in logs.items():
+            a = acc.setdefault(k, [0.0, 0.0])
+            a[0] += float(v) * batch_size
+            a[1] += batch_size
+
+    def _log_eval_totals(self, split: str) -> None:
+        acc = self._eval_sums.pop(split, {})
+        if not acc:
+            return
+        keys = sorted(acc)
+        t = torch.tensor([[acc[k][0], acc[k][1]] for k in keys], dtype=torch.float64, device=self.device)
+        if self.trainer is not None and self.trainer.world_size > 1:
+            t = self.trainer.strategy.reduce(t, reduce_op="sum")
+        means = {k: (t[i, 0] / t[i, 1].clamp_min(1)).float() for i, k in enumerate(keys)}
+        self.log_dict({f"{split}/{k}": v for k, v in means.items()}, prog_bar=split == "val")
+        if split == "val" and "total" in means:
+            self.log("val_loss", means["total"])
+
+    def on_validation_epoch_start(self) -> None:
+        self._eval_sums.pop("val", None)
+
+    def on_validation_epoch_end(self) -> None:
+        self._log_eval_totals("val")
+
+    def on_test_epoch_start(self) -> None:
+        self._eval_sums.pop("test", None)
+
+    def on_test_epoch_end(self) -> None:
+        self._log_eval_totals("test")
 
     def describe(self) -> None:
         for name, mod in self.named_children():

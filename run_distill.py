@@ -65,9 +65,14 @@ def train(cfg: DictConfig) -> None:
         log.info("===> Starting fit (datasets are set up and the teacher is loaded at the start of fit)")
         trainer.fit(task, data_module, ckpt_path=cfg.resume_ckpt)
 
+    ckpt = "best" if cfg.training and _has_best(trainer) else None
     if cfg.final_validate:
         with stage("Final validation", log):
-            trainer.validate(task, data_module, ckpt_path="best" if cfg.training and _has_best(trainer) else None)
+            trainer.validate(task, data_module, ckpt_path=ckpt)
+
+    if cfg.final_test and cfg.data_module.get("test"):
+        with stage("Testing on the held-out test split (reported once, never used for selection)", log):
+            trainer.test(task, data_module, ckpt_path=ckpt)
 
     if trainer.is_global_zero:
         with stage(f"Exporting deployable student to {cfg.export_dir}", log):

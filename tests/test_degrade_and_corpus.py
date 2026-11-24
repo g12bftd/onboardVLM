@@ -6,6 +6,7 @@ import random
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 import torch
 from conftest import ROOT, write_video
@@ -100,7 +101,7 @@ def test_image_corpus_builder_filters_and_decontaminates(tmp_path):
         ImageCorpusDataset(str(out), require_finalized=True)
 
 
-def test_finalize_dedups_across_sources_and_holds_out(tmp_path):
+def _two_source_corpus(tmp_path):
     raw = {k: tmp_path / "raw" / k for k in ("a", "b")}
     for d in raw.values():
         d.mkdir(parents=True)
@@ -116,18 +117,73 @@ def test_finalize_dedups_across_sources_and_holds_out(tmp_path):
         _run("make_image_corpus.py", "--source", "folder", "--input_path", str(d), "--name", k, "--output_path", str(corpus / k), "--shard_size", "7")
     spec = tmp_path / "sources.yaml"
     spec.write_text("name: toy\nversion: 1\nsources:\n  - {dir: a, group: g, license: x}\n  - {dir: b, group: g, license: y}\n")
-    _run("finalize_corpus.py", "--corpus_root", str(corpus), "--sources_yaml", str(spec), "--holdout", "2")
+    return corpus, spec
+
+
+def test_finalize_dedups_across_sources(tmp_path):
+    corpus, spec = _two_source_corpus(tmp_path)
+    _run("finalize_corpus.py", "--corpus_root", str(corpus), "--sources_yaml", str(spec), "--val_fraction", "0.2", "--test_fraction", "0.2")
     m = json.load(open(corpus / "corpus_manifest.json"))
     a, b = m["sources"]
-    assert (a["built"], a["train"], a["holdout"]) == (30, 28, 2)
-    assert (b["built"], b["dup_exact_cross"], b["dup_dhash_cross"], b["train"], b["holdout"]) == (24, 3, 1, 18, 2)
-    assert m["total_train"] == 46 and (corpus / "CORPUS_CARD.md").exists()
-    train = ImageCorpusDataset(str(corpus / "*"), require_finalized=True)
-    hold = ImageCorpusDataset([str(corpus / "a"), str(corpus / "b")], split="holdout")
-    ids_t = {train.record(i).sample_id for i in range(len(train))}
-    ids_h = {hold[i]["sample_id"] for i in range(len(hold))}
-    assert len(train) == 46 and len(hold) == 4 and not ids_t & ids_h
-    assert not any(s.startswith("b/copy") or s == "b/resized.jpg" for s in ids_t)
+    assert (a["built"], a["kept"]) == (30, 30)
+    assert (b["built"], b["dup_exact_cross"], b["dup_dhash_cross"], b["kept"]) == (24, 3, 1, 20)
+    assert m["total_kept"] == 50 and sum(m["splits"].values()) == 50 and (corpus / "CORPUS_CARD.md").exists()
+    assert json.load(open(corpus / "b" / "dataset.json"))["license"] == "y"
+    # the loader reproduces the split sizes the card reports, for the same definition
+    split = {"val_fraction": 0.2, "test_fraction": 0.2, "split_seed": 0, "require_finalized": True}
+    parts = {sp: ImageCorpusDataset(str(corpus / "*"), split=sp, **split) for sp in ("train", "val", "test")}
+    assert {sp: len(d) for sp, d in parts.items()} == m["splits"]
+    ids = {sp: {d.record(i).sample_id for i in range(len(d))} for sp, d in parts.items()}
+    assert not (ids["train"] & ids["val"] or ids["train"] & ids["test"] or ids["val"] & ids["test"])
+    assert sum(map(len, ids.values())) == 50
+    assert not any(s.startswith("b/copy") or s == "b/resized.jpg" for v in ids.values() for s in v)
+
+
+def test_loader_splits_are_content_hashed(tmp_path):
+    """Splits depend only on (image, fractions, seed): not on which shards / sources are loaded, and
+    duplicates (same dHash) always land in the same split."""
+    from onboard_vlm.data.corpus import assign_split
+
+    corpus, _ = _two_source_corpus(tmp_path)  # not finalized: duplicates are still present
+    kw = {"val_fraction": 0.3, "test_fraction": 0.2, "split_seed": 0}
+    full = {sp: ImageCorpusDataset([str(corpus / "a"), str(corpus / "b")], split=sp, **kw) for sp in ("train", "val", "test")}
+    lite = {sp: ImageCorpusDataset(str(corpus / "a"), split=sp, max_shards=2, **kw) for sp in ("train", "val", "test")}
+    sid = lambda d: {d.record(i).sample_id for i in range(len(d))}  # noqa: E731
+    for sp in ("train", "val", "test"):
+        assert sid(lite[sp]) <= sid(full[sp])  # lite is a consistent subset
+    where = {s: sp for sp, d in full.items() for s in sid(d)}
+    for i in range(3):
+        assert where[f"a/{i:02d}.jpg"] == where[f"b/copy{i}.jpg"]  # exact duplicate
+    assert where["a/05.jpg"] == where["b/resized.jpg"]  # perceptual duplicate (same dHash)
+    # statistics, determinism and the seed
+    rng = np.random.default_rng(0)
+    dh = rng.integers(1 << 20, 1 << 62, 100_000, dtype=np.uint64) | np.uint64(0xFFFF)
+    sha = np.array([rng.bytes(20) for _ in range(100_000)], dtype="S20")
+    c = assign_split(dh, sha, 0.05, 0.1, seed=0)
+    assert abs((c == 1).mean() - 0.05) < 0.005 and abs((c == 2).mean() - 0.1) < 0.006
+    assert (assign_split(dh, sha, 0.05, 0.1, seed=0) == c).all() and (assign_split(dh, sha, 0.05, 0.1, seed=1) != c).any()
+    assert ((assign_split(dh, sha, 0.1, 0.1, seed=0) == 1) >= (c == 1)).all()  # growing val only moves train images
+    with pytest.raises(ValueError):
+        assign_split(dh, sha, 0.6, 0.5)
+
+
+def test_data_module_rejects_leaky_split_configs(tmp_path):
+    from onboard_vlm.data.data_module import DistillDataModule
+
+    corpus, _ = _two_source_corpus(tmp_path)
+    tr = [{"name": "image_corpus", "root": str(corpus / "a")}]
+    with pytest.raises(ValueError, match="conflicting split"):
+        DistillDataModule(tr, val=[{"name": "image_corpus", "root": str(corpus / "a"), "split": "val", "val_fraction": 0.5}])
+    with pytest.raises(ValueError, match="reads split 'train'"):
+        DistillDataModule(tr, val=[{"name": "image_corpus", "root": str(corpus / "a")}])
+    with pytest.raises(ValueError, match="reads split 'test'"):
+        DistillDataModule(tr, val=[{"name": "image_corpus", "root": str(corpus / "a"), "split": "test"}])
+    dm = DistillDataModule(tr, val=[{"name": "image_corpus", "root": str(corpus / "a"), "split": "val", "group": "a"}],
+                           test=[{"name": "image_corpus", "root": str(corpus / "a"), "split": "test", "group": "a"}],
+                           dataset_defaults={"image_corpus": {"val_fraction": 0.3, "test_fraction": 0.3}}, num_workers=0, pin_memory=False)
+    dm.setup()
+    assert dm.val_groups == ["a"] and dm.test_groups == ["a"]
+    assert len(dm.train_set) + len(dm.val_sets["a"]) + len(dm.test_sets["a"]) == 30
 
 
 def test_mixture_sampler_and_data_module_weights():

@@ -2,6 +2,8 @@
 _target_: onboard_vlm.data.data_module.DistillDataModule
 train:
   - {name: synthetic, num_samples: 32, min_side: 96, max_side: 400}
+val:
+  - {name: synthetic, num_samples: 8, min_side: 96, max_side: 400, seed: 1, group: a}
 collator: {token_budgets: [70], train: false, build_student_view: false}
 text: {processor_id: tiny, prompt: auto, with_answer: true}
 batch_size: ${batch_size}

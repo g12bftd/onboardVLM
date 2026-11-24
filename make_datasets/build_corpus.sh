@@ -4,7 +4,9 @@
 #   step 0  download        make_datasets/download/corpus/download_*.sh          -> $RAW_ROOT
 #   step 1  blocklist       fingerprints of every benchmark val/test image/frame -> $CORPUS_ROOT/eval_blocklist.json
 #   step 2  build sources   filter + decontaminate + shard to LMDB (parallel)   -> $CORPUS_ROOT/<source>/
-#   step 3  finalize        global exact + perceptual de-dup, held-out split, manifest + CORPUS_CARD.md
+#   step 3  finalize        global exact + perceptual de-dup, dataset.json per source, manifest + CORPUS_CARD.md
+#   (train / val / test splits and mixture weights are NOT baked in: the loader assigns splits by a
+#    seeded content hash and the YAML sets the weights, so ablations never require a rebuild)
 #
 # Usage:  RAW_ROOT=/data/raw LMDB_ROOT=/data/lmdb CORPUS_ROOT=/data/corpus WORKERS=32 bash make_datasets/build_corpus.sh [step...]
 #         (steps: blocklist text_rich openimages sa1b imagenet21k cc12m ego4d epic_kitchens finalize; default all)
@@ -62,7 +64,7 @@ step_epic_kitchens() {
   parallel "$WORKERS" $C/make_frame_corpus.py --input_path "$RAW_ROOT/epic_kitchens/EPIC-KITCHENS" --fps 0.5 \
     --name epic_kitchens --output_path "$CORPUS_ROOT/egocentric/epic_kitchens" --blocklist "$BL"
 }
-step_finalize() { python -u $C/finalize_corpus.py --corpus_root "$CORPUS_ROOT" --sources_yaml $C/sources.yaml --holdout 2000; }
+step_finalize() { python -u $C/finalize_corpus.py --corpus_root "$CORPUS_ROOT" --sources_yaml $C/sources.yaml; }
 
 STEPS=("$@")
 [ ${#STEPS[@]} -eq 0 ] && STEPS=(blocklist text_rich openimages sa1b imagenet21k cc12m ego4d epic_kitchens finalize)

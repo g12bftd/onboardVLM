@@ -134,3 +134,25 @@ def test_logit_task_starts_from_feature_export(tmp_path, tiny_processor):
     sd_task = task.student.state_dict()
     assert all(torch.equal(sd_feat[k], sd_task[k]) for k in sd_feat)
     assert task.cfg["student"]["name"] == "compact_vit"
+
+
+def test_per_group_validation_and_test_metrics():
+    """One dataloader per val / test group: metrics per group plus the image-weighted total and val_loss."""
+    from onboard_vlm.data.data_module import DistillDataModule
+
+    dm = DistillDataModule(
+        train=[{"name": "synthetic", "num_samples": 8}],
+        val=[{"name": "synthetic", "num_samples": 8, "seed": 1, "group": "web"}, {"name": "synthetic", "num_samples": 4, "seed": 2, "group": "ego"}],
+        test=[{"name": "synthetic", "num_samples": 4, "seed": 3, "group": "web"}],
+        collator={"token_budgets": [70], "train": True}, val_collator={"token_budgets": [70], "train": False},
+        batch_size=4, num_workers=0, pin_memory=False,
+    )
+    task = FeatureDistillationTask(hparams(), optimizer={"lr": 1e-3})
+    tr = pl.Trainer(max_epochs=1, accelerator="cpu", logger=False, enable_checkpointing=False, enable_progress_bar=False,
+                    enable_model_summary=False, num_sanity_val_steps=0)
+    tr.fit(task, dm)
+    m = {k: float(v) for k, v in tr.callback_metrics.items()}
+    assert {"val/web/total", "val/ego/total", "val/total", "val_loss", "val/web/token_cos"} <= set(m)
+    assert abs(m["val/total"] - (8 * m["val/web/total"] + 4 * m["val/ego/total"]) / 12) < 1e-4 and m["val_loss"] == m["val/total"]
+    tr.test(task, dm)
+    assert {"test/web/total", "test/total"} <= set(tr.callback_metrics)

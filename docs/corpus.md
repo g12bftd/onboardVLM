@@ -59,9 +59,23 @@ benchmark LMDBs (make_datasets/build_all_lmdb.sh) -> $LMDB_ROOT
 make_datasets/build_corpus.sh
    1 blocklist  : fingerprints of every benchmark val/test image + frame, TextVQA ids, EgoSchema videos
    2 sources    : decode -> filter -> decontaminate -> (downscale) -> LMDB shards + fingerprint index
-   3 finalize   : global exact + perceptual de-dup, per-source held-out split, manifest + corpus card
+   3 finalize   : global exact + perceptual de-dup, dataset.json per source, manifest + corpus card
 train            : data_module=general_vision (or general_vision_lite)
+                   the loader draws train / val / test and the mixture from YAML (no rebuild)
 ```
+
+**Design rule: the data files hold data, the YAML holds the experiment.** Each source is
+preprocessed once into its own LMDB dataset. Everything an ablation might change lives in
+`config/data_module/*.yaml` and is applied by the loader:
+
+* which sources are used;
+* their mixture weights and groups;
+* the train / val / test split (fractions and seed);
+* the val / test set sizes.
+
+So every ablation is a CLI override, and the resolved values are logged and saved with the run.
+Weights and splits are deliberately *not* written into the LMDB files: changing them would mean
+rewriting terabytes, and the run config would no longer be the full record of the experiment.
 
 ### 0. Download
 
@@ -162,8 +176,13 @@ $CORPUS_ROOT/<source>/
   shard_<worker>_<k>.meta.json    {"format": "corpus-v1", "dataset", "num_samples"}
   shard_<worker>_<k>.index.npz    sizes [n, 2] | dhash uint64 [n] | sha1 S20 [n]
   stats_<worker>.json             build-time filter counts
-  keep.npz / holdout.npz          train / held-out masks per shard (finalize)
+  keep.npz                        de-duplication mask per shard (finalize)
+  dataset.json                    provenance, licence, counts, duplicate statistics (finalize)
 ```
+
+One source is one dataset directory. The shards inside it are an implementation detail: LMDB allows
+only one writer per file, so a parallel build writes one shard per worker. The loader reads all
+shards of a source (or the first `max_shards`) as a single dataset.
 
 Each record keeps the encoded image bytes and its provenance (`sample_id = "<source>/<original
 key>"`). The numpy index lets the loader start in seconds and use flat memory at 10^7+ images,
@@ -182,19 +201,49 @@ come first and keep an image that also appears in a larger one. It applies:
 1. **Exact de-duplication**: identical SHA-1, within and across sources.
 2. **Perceptual de-duplication**: identical dHash, within and across sources. This catches re-encodes,
    resizes and re-hosted copies.
-3. **Held-out split**: 2,000 images per source directory (seeded) are removed from training. They serve
-   as in-distribution validation (`ImageCorpusDataset(split="holdout")`), so you can report how well
-   the student matches the teacher on general images it never saw, per group.
 
 Outputs:
 
-* `keep.npz` / `holdout.npz` per source;
+* `keep.npz` and `dataset.json` per source;
 * `corpus_manifest.json`: counts per source; within- vs cross-source duplicates; build filter
-  statistics; licences; the train-set digest;
-* `CORPUS_CARD.md`: the same as a table for the paper's appendix.
+  statistics; licences; the digest of all kept images;
+* `CORPUS_CARD.md`: the same as a table for the paper's appendix, including the split sizes for the
+  default split definition.
 
 The paper configs set `require_finalized: true`, so a corpus that has not been finalized cannot be
 used by accident.
+
+### Train / val / test: assigned in the loader
+
+`ImageCorpusDataset(split=..., val_fraction, test_fraction, split_seed)` assigns each image to a
+split with a seeded hash of its fingerprint (`assign_split`):
+
+* `u = splitmix64(dHash XOR seed)` in [0, 1); val if `u < val_fraction`, test if below
+  `val_fraction + test_fraction`, otherwise train;
+* the SHA-1 replaces the dHash for low-texture images.
+
+What this guarantees, and what is tested:
+
+* **No rebuild for a new split.** Fractions and seed are config values. Defaults are 0.2 % val and
+  0.2 % test per source, which is ~22k images for CC12M and ~500 for PixMo-Docs. `limit` then takes
+  an evenly spaced subset, so validation cost stays bounded.
+* **Stable.** An image's split depends only on the image, the fractions and the seed, not on which
+  other shards or sources are loaded:
+  * the lite corpus is an exact subset of the full one, split by split;
+  * adding a source never moves existing images between splits;
+  * growing `val_fraction` only moves train images into val.
+* **Duplicate-safe.** Copies with the same dHash always land in the same split, so even an
+  un-finalized corpus cannot have a train image re-appear in val / test.
+* **Hard to misconfigure.** `data_module.dataset_defaults.image_corpus` sets one split definition
+  for every corpus entry. The data module refuses:
+  * two entries reading the same source with different definitions;
+  * a val entry that reads the train or test split.
+
+**Benchmarks keep their official splits.** VizWiz, TextVQA, EgoBlind, etc. are stored as
+`train.lmdb` / `val.lmdb` / `test.lmdb` exactly as released, and are never re-randomized. A random
+re-split would leak official test images into training and make numbers incomparable with published
+results. Only their train splits enter distillation; val / test are for evaluation and for the
+decontamination blocklist.
 
 ## Using the corpus
 
@@ -222,16 +271,27 @@ python -u run_distill.py -m +experiment=sweeps/corpus_mixture                   
 
   Every pass is a new random crop at a sampled token budget. Following "a good teacher is patient
   and consistent" (Beyer et al., 2022), teacher and student always see the same augmented view.
-* **Ablations**:
-  * `data_module.mixture.<component>=0` drops one component;
-  * `data_module.drop_groups=[egocentric]` drops a group;
-  * `data_module=general_vision_lite` uses ~2.3M images (the first shards of every component), with
-    identical filtering, de-duplication and held-out split, for sweeps.
-* **Validation**:
-  * held-out images of every group (web + objects + scenes, text-rich, egocentric);
-  * 1,000 VizWiz val images.
+* **Validation** (`val`): one dataloader per group, covering web, objects, scenes, text-rich,
+  egocentric and target (official VizWiz val). Metrics are logged per group as
+  `val/<group>/token_cos` etc. `val/<metric>` and `val_loss` are the image-weighted means over all
+  groups; `val_loss` drives checkpoint selection.
+* **Test** (`test`): the corpus test split per group, up to 5,000 images each. It runs once after
+  training on the best checkpoint (`final_test=true`) and is never used for selection: this is the
+  "general capability preserved" number to report.
 
-  Both are decontaminated from training by construction.
+### Ablations are CLI overrides
+
+| change | override |
+|---|---|
+| drop one source | `data_module.mixture.ego4d=0` |
+| drop a group | `data_module.drop_groups=[egocentric]` (all groups: `+experiment=sweeps/corpus_mixture`) |
+| reweight | `data_module.mixture.cc12m=0.4 data_module.mixture.imagenet21k=0.05` |
+| bigger val split | `data_module.dataset_defaults.image_corpus.val_fraction=0.005` |
+| re-draw the splits (variance across splits) | `data_module.dataset_defaults.image_corpus.split_seed=1` |
+| fewer images (fast sweeps) | `data_module=general_vision_lite` (~2.3M images, same splits) |
+
+Adding a source takes three things: its directory, one entry in `sources.yaml`, and one YAML train
+entry with its weight.
 
 ## Capture degradations (consistent teaching)
 
@@ -256,7 +316,7 @@ These are WearVQA's six image-quality failure modes.
 
 Benchmark accuracy alone does not show what was lost. Report:
 
-* **Token fidelity on held-out general images**, per group: `val/token_cos` and the LM-space cosine.
+* **Token fidelity on the held-out test split**, per group: `test/<group>/token_cos` and the LM-space cosine.
 * **The grafted VLM on general VLM benchmarks**, alongside the seven project benchmarks.
 * **The same numbers for the teacher**, at every token budget.
 

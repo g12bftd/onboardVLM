@@ -70,7 +70,7 @@ class FeatureDistillationTask(BaseDistillationTask):
     def compute_losses(self, s_proj: StudentVisionOutput, t_out: TeacherVisionOutput) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         return self.criterion(s_proj, t_out)
 
-    def _step(self, batch: DistillBatch, split: str) -> torch.Tensor:
+    def _step(self, batch: DistillBatch, split: str, group: str | None = None) -> torch.Tensor:
         t_out = self.teacher_outputs(batch)
         s_out = self.student_outputs(batch)
         if s_out.image_token_lengths != t_out.image_token_lengths:
@@ -80,14 +80,8 @@ class FeatureDistillationTask(BaseDistillationTask):
         logs["total"] = loss.detach()
         with torch.no_grad():
             logs["token_cos"] = 1.0 - self.cos_metric(s_proj, t_out)
-        self.log_losses(logs, split, len(batch))
+        self.log_losses(logs, split, len(batch), group)
         return loss
-
-    def training_step(self, batch: DistillBatch, batch_idx: int) -> torch.Tensor:
-        return self._step(batch, "train")
-
-    def validation_step(self, batch: DistillBatch, batch_idx: int) -> torch.Tensor:
-        return self._step(batch, "val")
 
     def export(self, directory: str) -> None:
         """Inference export: student weights + config (the adapter is discarded)."""

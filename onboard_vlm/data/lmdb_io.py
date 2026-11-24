@@ -100,7 +100,8 @@ def encode_image(src: str | bytes | Any, max_side: int | None = 2048, quality: i
 
 def decode_image(b: bytes) -> torch.Tensor:
     """Encoded bytes -> ``UInt8Tensor[3, H, W]`` RGB (EXIF orientation applied, like HF ``load_image``)."""
-    from torchvision.io import ImageReadMode, decode_image as tv_decode
+    from torchvision.io import ImageReadMode
+    from torchvision.io import decode_image as tv_decode
 
     data = torch.frombuffer(bytearray(b), dtype=torch.uint8)
     try:

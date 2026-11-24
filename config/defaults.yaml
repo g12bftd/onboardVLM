@@ -23,6 +23,7 @@ layer_map: {}
 resume_ckpt: null
 training: true
 final_validate: true
+final_test: true          # run data_module.test (if any) with the best checkpoint after training
 # Offline teacher-feature cache (run_cache_teacher.py). When set, the feature task skips loading the teacher
 # and expects every batch to carry cached targets (use the cached_teacher dataset wrapper).
 cache_root: null

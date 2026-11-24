@@ -151,5 +151,6 @@ The logit task usually starts from a feature or embedding export (`student_dir=.
 * Pinned default checkpoint commits (`config/teacher/*.yaml`, `SUPPORTED_TEACHERS`).
 * Every random augmentation is stored in `TransformParams`, so cache replay is exact.
 * The corpus mixture sampler is deterministic given seed + epoch, and identical on all ranks.
+* Corpus splits are a seeded content hash, so they are reproducible and stable across corpus sizes.
 * The finalized corpus is identified by a digest (`docs/corpus.md`).
 * The Hydra config is saved with every run and logged at start-up.

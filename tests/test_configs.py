@@ -93,7 +93,8 @@ def test_general_vision_matches_corpus_definition():
         roots = {t["root"][len("/C/"):] for t in d["train"] if t["name"] == "image_corpus"}
         assert roots == {s["dir"] for s in spec["sources"]}, dm  # every built source is trained on, nothing else
         assert abs(sum(d["mixture"].values()) - 1.0) < 1e-9 and abs(sum(t["weight"] for t in d["train"]) - 1.0) < 1e-9
-        assert all(t.get("require_finalized") for t in d["train"] if t["name"] == "image_corpus")
+        assert d["dataset_defaults"]["image_corpus"]["require_finalized"] is True  # one split definition for every entry
+        assert {t["group"] for t in d["val"]} == {t["group"] for t in d["train"]}  # every train group is monitored
 
 
 @pytest.mark.parametrize("teacher", ["gemma4_e2b", "gemma4_e4b", "gemma4_e2b_base", "gemma4_e4b_base"])

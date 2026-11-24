@@ -76,6 +76,12 @@ class PipelineLoggingCallback(pl.Callback):
         tag = "sanity check" if trainer.sanity_checking else "validation"
         log.info("<=== %s: %s", tag, fmt_metrics(trainer.callback_metrics, ["val"]))
 
+    def on_test_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        log.info("===> Test (step %d)", trainer.global_step)
+
+    def on_test_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        log.info("<=== test: %s", fmt_metrics(trainer.callback_metrics, ["test"]))
+
     # -- checkpoints / end --------------------------------------------------------------------
     def on_save_checkpoint(self, trainer: pl.Trainer, pl_module: pl.LightningModule, checkpoint: dict[str, Any]) -> None:
         if getattr(self, "_last_ckpt_step", None) == trainer.global_step:  # top-k and last.ckpt share one state
