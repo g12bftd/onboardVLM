@@ -42,9 +42,19 @@ OBJECTS="${OBJECTS_SOURCE:-imagenet1k}"
 ME="${USER:-$(id -un)}"
 STEPS_DIR="${DATA_ROOT:-$ONBOARD_VLM_ROOT/data}/.steps"   # written by prepare_all.sh after each finished step
 skipped() { [[ "$SKIP" == *",$1,"* ]]; }
+# conda for the jobs: the installation of this shell (CONDA_EXE is set once conda is initialised), unless
+# CONDA_BASE is set; env ONBOARD_VLM_ENV (default onboardvlm). Both are passed on to the jobs.
+if [ -z "${CONDA_BASE:-}" ] && [ -n "${CONDA_EXE:-}" ]; then CONDA_BASE="$(cd "$(dirname "$CONDA_EXE")/.." && pwd)"; fi
+export CONDA_BASE="${CONDA_BASE:-$ONBOARD_VLM_ROOT/miniforge3}" ONBOARD_VLM_ENV="${ONBOARD_VLM_ENV:-onboardvlm}"
 
-# ---- preflight: credentials the jobs will need (fail here, not 10 hours into a job) -------------------
+# ---- preflight: what the jobs will need (fail here, not 10 hours into a job) ---------------------------
 problems=()
+if [ ! -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+  problems+=("conda: no installation at $CONDA_BASE: run 'conda activate $ONBOARD_VLM_ENV' first, or export CONDA_BASE=\$(conda info --base)")
+elif ! "$CONDA_BASE/bin/conda" run -n "$ONBOARD_VLM_ENV" python -c \
+    'import importlib.util as u, sys; sys.exit(u.find_spec("onboard_vlm") is None)' >/dev/null 2>&1; then
+  problems+=("conda: env '$ONBOARD_VLM_ENV' in $CONDA_BASE missing or without the package (pip install -e '.[data]' in it)")
+fi
 hf auth whoami >/dev/null 2>&1 || problems+=("Hugging Face: run 'hf auth login' (after 'source scripts/paths.sh'), accept the terms of timm/imagenet-1k-wds")
 kaggle competitions files egoschema-public >/dev/null 2>&1 \
   || problems+=("Kaggle: cannot list egoschema-public (EgoSchema videos): API token in ~/.kaggle/access_token (chmod 600), and accept the rules at kaggle.com/competitions/egoschema-public")
@@ -87,7 +97,7 @@ sub() {  # sub <name> <partition> <time> <deps (colon-separated, may be empty)> 
 }
 join() { local out="" x; for x in "$@"; do [ -n "$x" ] && out="${out:+$out:}$x"; done; echo "$out"; }
 declare -A J
-echo "data pipeline (${DRY:+dry run, }markers in $STEPS_DIR):" >&2
+echo "data pipeline (${DRY:+dry run, }conda env $ONBOARD_VLM_ENV in $CONDA_BASE, markers in $STEPS_DIR):" >&2
 
 # ---- downloads (parallel) ------------------------------------------------------------------------------
 J[models]=$(sub models "$DLPART" "$TIME" "" models)

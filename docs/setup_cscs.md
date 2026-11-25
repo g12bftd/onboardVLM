@@ -35,6 +35,10 @@ mkdir -p /users/$USER/repos && git clone git@github.com:g12bftd/onboardVLM.git /
 
 ## 2. Conda environment (on a login node)
 
+If you already have a conda / miniforge installation, skip the installer and create the `onboardvlm`
+environment in it. The batch jobs use the conda of the shell you submit from (`conda info --base`; set
+`CONDA_BASE` to override, `ONBOARD_VLM_ENV` for another environment name).
+
 ```bash
 mkdir -p /capstor/scratch/cscs/$USER/onboardvlm && cd /capstor/scratch/cscs/$USER/onboardvlm
 curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-$(uname -m).sh"
