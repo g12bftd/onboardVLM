@@ -1,8 +1,10 @@
 """EgoBlind (doc-doc/EgoBlind) -> LMDB.
 
 Annotations are CSVs with ``question_id, video_name, question, answer0..answer3, type, start-time/s``
-(``test_half_release.csv`` is the publicly released half of the test set; pass the train CSV
-from the Google-Drive training folder with ``--train_csv``). Questions are answered from the
+from the GitHub repo: ``test.csv`` (the full test set, 2,565 questions; answers released after the
+first public half ``test_half_release.csv``, used if ``test.csv`` is absent) and ``train.csv``
+(``finetune/train.csv``, 2,746 questions). Questions without any reference answer are skipped (and
+counted). Questions are answered from the
 video *up to the moment they were asked*, so ``--num_frames`` frames are sampled uniformly in
 ``[max(0, t - window), t]`` with ``t = start-time/s`` (the last frame is at question time).
 
@@ -31,21 +33,29 @@ def _video_path(videos: dict[str, str], name: str, pattern: str | None) -> str |
 
 def main() -> None:
     p = video_parser(__doc__, num_frames=16)
-    p.add_argument("--test_csv", default="test_half_release.csv")
-    p.add_argument("--train_csv", default=None)
+    p.add_argument("--test_csv", default=None, help="default: test.csv, else test_half_release.csv")
+    p.add_argument("--train_csv", default=None, help="default: train.csv if present")
     p.add_argument("--window", type=float, default=None, help="seconds of history before the question (default: all)")
     p.add_argument("--video_pattern", default=None)
     args = p.parse_args()
     videos = index_videos(args.video_dir or args.input_path)
     print(f"[egoblind] indexed {len(videos)} videos")
-    splits = {"test": args.test_csv}
-    if args.train_csv:
-        splits["train"] = args.train_csv
+    def here(name: str) -> bool:
+        return os.path.isfile(os.path.join(args.input_path, name))
+
+    splits = {"test": args.test_csv or ("test.csv" if here("test.csv") else "test_half_release.csv")}
+    train_csv = args.train_csv or ("train.csv" if here("train.csv") else None)
+    if train_csv:
+        splits["train"] = train_csv
     for split, csv_name in splits.items():
         path = csv_name if os.path.isabs(csv_name) else os.path.join(args.input_path, csv_name)
         rows = list(csv.DictReader(open(path, encoding="utf-8")))[: args.limit]
+        answered = [any((r.get(k) or "").strip() for k in ("answer0", "answer1", "answer2", "answer3", "answer")) for r in rows]
+        unanswered = answered.count(False)
+        rows = [r for r, ok in zip(rows, answered) if ok]
         missing = [r for r in rows if _video_path(videos, r["video_name"], args.video_pattern) is None]
-        print(f"[egoblind/{split}] {len(rows)} questions, {len(missing)} without a video file")
+        print(f"[egoblind/{split}] {os.path.basename(path)}: {len(rows)} questions ({unanswered} without a reference "
+              f"answer skipped), {len(missing)} without a video file")
         if args.dry_run:
             continue
         with LMDBWriter(args.output_path, split, "egoblind") as w:

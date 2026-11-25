@@ -16,7 +16,7 @@
 #                          a corpus source: text_rich openimages cc12m imagenet1k imagenet21k sa1b epic_kitchens ego4d
 #                          probe data: nyuv2
 #   benchmarks_download  download:<every benchmark>
-#   benchmarks_extract   unpack the video archives fetched from Google Drive (EgoBlind, EgoTextVQA)
+#   benchmarks_extract   unpack the EgoBlind video archives (Google Drive) and check that no video is missing
 #   benchmarks_lmdb      $RAW_ROOT/<benchmark> -> $LMDB_ROOT/<benchmark>/<split>.lmdb
 #   eval_sets            E1 / E3 image sets -> raw $RAW_ROOT/eval_sets/<set>, processed $EVAL_ROOT/<set>
 #   probe_data           download:imagenet1k + download:nyuv2, NYUv2 -> $EVAL_ROOT/nyuv2
@@ -97,23 +97,20 @@ download() {  # download <name>
 step_benchmarks_download() { local b; for b in "${BENCHMARKS[@]}"; do log "download:$b"; download "$b"; done; }
 
 step_benchmarks_extract() {
-  local f
-  for f in "$RAW_ROOT/egoblind/videos_archive" "$RAW_ROOT/egotextvqa/videos/indoor_archive"; do
-    if [ -f "$f" ] && [ ! -f "$f.extracted" ]; then
-      extract_any "$f" "$(dirname "$f")/$( [ "$(basename "$f")" = videos_archive ] && echo videos || echo indoor )" && touch "$f.extracted"
-    fi
-  done
-  find "$RAW_ROOT/egotextvqa/videos" -maxdepth 2 \( -name "*.zip" -o -name "*.tar*" \) 2>/dev/null | while read -r a; do
-    [ -f "$a.extracted" ] || { extract_any "$a" "$(dirname "$a")" && touch "$a.extracted"; }
-  done
+  # EgoBlind: the video archives of the Train / Test Google Drive folders -> $RAW_ROOT/egoblind/videos/<train|test>/.../<archive>/
+  local a rel
+  while IFS= read -r a; do
+    [ -f "$a.extracted" ] && continue
+    rel="${a#"$RAW_ROOT/egoblind/"}"
+    extract_any "$a" "$RAW_ROOT/egoblind/videos/${rel%%.*}" && touch "$a.extracted"
+  done < <(find "$RAW_ROOT/egoblind/train" "$RAW_ROOT/egoblind/test" -type f \( -iname "*.zip" -o -iname "*.tar" \
+             -o -iname "*.tar.gz" -o -iname "*.tgz" \) 2>/dev/null | sort)
+  # complete? every test video, and (almost) every train video
+  python -I "$HERE/download/verify_videos.py" --name egoblind --video_dir "$RAW_ROOT/egoblind" --key video_name \
+    --ids "$RAW_ROOT/egoblind/test.csv" "$RAW_ROOT/egoblind/train.csv" --required "$RAW_ROOT/egoblind/test.csv" --max_missing 0.01
 }
 
 step_benchmarks_lmdb() {
-  if [ -z "${EGOBLIND_TRAIN_CSV:-}" ]; then  # the EgoBlind train CSV ships inside the Google Drive folder
-    mapfile -t csvs < <(find "$RAW_ROOT/egoblind/train" -name "*.csv" 2>/dev/null)
-    if [ "${#csvs[@]}" -eq 1 ]; then export EGOBLIND_TRAIN_CSV="${csvs[0]}"; log "EgoBlind train CSV: $EGOBLIND_TRAIN_CSV"
-    else log "WARNING: set EGOBLIND_TRAIN_CSV (found ${#csvs[@]} CSVs under $RAW_ROOT/egoblind/train); EgoBlind gets no train split"; fi
-  fi
   if [ -f "$LMDB_ROOT/.done" ]; then log "benchmark LMDBs already built (rm $LMDB_ROOT/.done to rebuild)"; return; fi
   rm -rf "${LMDB_ROOT:?}"/*  # LMDB writers refuse duplicate keys: always build into an empty directory
   bash "$HERE/build_all_lmdb.sh"

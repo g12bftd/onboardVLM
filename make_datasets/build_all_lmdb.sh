@@ -10,8 +10,8 @@ python $L/make_textvqa.py --input_path "$RAW_ROOT/textvqa" --output_path "$LMDB_
 python $L/make_wearvqa.py --input_path "$RAW_ROOT/wearvqa" --output_path "$LMDB_ROOT/wearvqa"
 python $L/make_cvbench.py --input_path "$RAW_ROOT/cvbench" --output_path "$LMDB_ROOT/cvbench"
 
-# EgoBlind: frames sampled up to the question time; pass the train CSV found in the Drive folder.
-python $L/make_egoblind.py --input_path "$RAW_ROOT/egoblind" --video_dir "$RAW_ROOT/egoblind/videos" \
+# EgoBlind: frames sampled up to the question time; test.csv (full test set) and train.csv from the GitHub repo.
+python $L/make_egoblind.py --input_path "$RAW_ROOT/egoblind" --video_dir "$RAW_ROOT/egoblind" \
   --output_path "$LMDB_ROOT/egoblind" --num_frames 16 --max_side 1280 \
   ${EGOBLIND_TRAIN_CSV:+--train_csv "$EGOBLIND_TRAIN_CSV"}
 

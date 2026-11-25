@@ -119,6 +119,12 @@ The submit script is safe to re-run at any time and only submits what is missing
   depend on it;
 * everything else is submitted.
 
+The video benchmarks are checked after download (`make_datasets/download/verify_videos.py`): a download with
+missing videos fails its job instead of producing a benchmark with missing questions. EgoBlind's videos
+come from the authors' Google Drive, which limits downloads per file ("Too many users have viewed or
+downloaded this file recently"): re-submit a few hours later (finished files are kept), or save the
+cookies of a browser session that can open the folders as `~/.cache/gdown/cookies.txt`.
+
 If a job fails or times out, the jobs that depend on it are cancelled (`--kill-on-invalid-dep=yes`): fix
 the cause and re-run the submit script. Downloads resume where they stopped, and an unfinished build is
 redone from an empty directory. Monitor progress:

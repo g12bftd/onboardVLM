@@ -74,6 +74,54 @@ def test_egoblind_builder_samples_frames_before_question(tmp_path):
     assert 140 <= s["frames"][-1].float().mean() <= 175
 
 
+def test_egoblind_builder_full_test_and_train_csv(tmp_path):
+    """test.csv (full test set) is preferred over the released half, train.csv is picked up, and questions
+    without any reference answer (7 in the official test.csv) are skipped."""
+    raw = tmp_path / "raw"
+    (raw / "videos" / "split_1").mkdir(parents=True)
+    for v in (923, 10):
+        write_video(str(raw / "videos" / "split_1" / f"{v:05d}.mp4"), num_frames=20, fps=10)
+    header = ["question_id", "video_name", "question", "answer0", "answer1", "answer2", "answer3", "type", "start-time/s"]
+    for name, rows in {
+        "test.csv": [["v_00923_1", "923", "q1?", "a", "b", "", "", "navigation", "1.0"],
+                     ["v_00923_2", "923", "q2?", "", "", "", "", "navigation", "1.5"]],
+        "test_half_release.csv": [["v_00923_1", "923", "q1?", "a", "b", "", "", "navigation", "1.0"]],
+        "train.csv": [["v_00010_1", "10", "q3?", "c", "", "", "", "tool use", "0.5"]],
+    }.items():
+        with open(raw / name, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(header)
+            w.writerows(rows)
+    run_builder("make_egoblind.py", "--input_path", str(raw), "--video_dir", str(raw), "--output_path", str(tmp_path / "out"),
+                "--num_frames", "2")
+    test, train = LMDBVQADataset(str(tmp_path / "out"), "test"), LMDBVQADataset(str(tmp_path / "out"), "train")
+    assert [s["sample_id"] for s in test] == ["v_00923_1"] and [s["sample_id"] for s in train] == ["v_00010_1"]
+
+
+def test_verify_videos_detects_incomplete_downloads(tmp_path):
+    script = os.path.join(ROOT, "make_datasets", "download", "verify_videos.py")
+    vids = tmp_path / "videos" / "part"
+    vids.mkdir(parents=True)
+    for stem in ("00923", "uid1"):
+        (vids / f"{stem}.mp4").write_bytes(b"x")
+    with open(tmp_path / "test.csv", "w", newline="") as f:
+        csv.writer(f).writerows([["video_name"], ["923"], ["923"]])
+    json.dump([{"q_uid": "uid1"}, {"q_uid": "uid2"}], open(tmp_path / "questions.json", "w"))
+    json.dump({"uid1": 0}, open(tmp_path / "subset.json", "w"))
+
+    def verify(*args: str) -> int:
+        return subprocess.run([sys.executable, "-I", script, "--name", "t", "--video_dir", str(tmp_path / "videos"), *args],
+                              capture_output=True, text=True).returncode
+
+    assert verify("--ids", str(tmp_path / "test.csv"), "--key", "video_name") == 0          # zero-padded stem found
+    assert verify("--ids", str(tmp_path / "questions.json"), "--key", "q_uid") == 1           # uid2 missing
+    assert verify("--ids", str(tmp_path / "questions.json"), "--key", "q_uid", "--max_missing", "1",
+                  "--required", str(tmp_path / "subset.json")) == 0                            # tolerated; subset complete
+    json.dump({"uid2": 0}, open(tmp_path / "subset.json", "w"))
+    assert verify("--ids", str(tmp_path / "questions.json"), "--key", "q_uid", "--max_missing", "1",
+                  "--required", str(tmp_path / "subset.json")) == 1                            # a required video missing
+
+
 def test_egoschema_builder_subset_and_full(tmp_path):
     raw = tmp_path / "raw"
     raw.mkdir()

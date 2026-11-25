@@ -42,6 +42,7 @@ OBJECTS="${OBJECTS_SOURCE:-imagenet1k}"
 ME="${USER:-$(id -un)}"
 STEPS_DIR="${DATA_ROOT:-$ONBOARD_VLM_ROOT/data}/.steps"   # written by prepare_all.sh after each finished step
 skipped() { [[ "$SKIP" == *",$1,"* ]]; }
+step_done() { [ "$1" = check ] || [ -f "$STEPS_DIR/${1//[:\/]/_}.ok" ]; }
 # conda for the jobs: the installation of this shell (CONDA_EXE is set once conda is initialised), unless
 # CONDA_BASE is set; env ONBOARD_VLM_ENV (default onboardvlm). Both are passed on to the jobs.
 if [ -z "${CONDA_BASE:-}" ] && [ -n "${CONDA_EXE:-}" ]; then CONDA_BASE="$(cd "$(dirname "$CONDA_EXE")/.." && pwd)"; fi
@@ -56,8 +57,15 @@ elif ! "$CONDA_BASE/bin/conda" run -n "$ONBOARD_VLM_ENV" python -c \
   problems+=("conda: env '$ONBOARD_VLM_ENV' in $CONDA_BASE missing or without the package (pip install -e '.[data]' in it)")
 fi
 hf auth whoami >/dev/null 2>&1 || problems+=("Hugging Face: run 'hf auth login' (after 'source scripts/paths.sh'), accept the terms of timm/imagenet-1k-wds")
-kaggle competitions files egoschema-public >/dev/null 2>&1 \
-  || problems+=("Kaggle: cannot list egoschema-public (EgoSchema videos): API token in ~/.kaggle/access_token (chmod 600), and accept the rules at kaggle.com/competitions/egoschema-public")
+if ! step_done download:egoschema; then  # EgoSchema videos: a Kaggle token, and the competition rules accepted
+  if ! kaggle competitions files egoschema-public >/dev/null 2>&1; then
+    problems+=("Kaggle: cannot list egoschema-public (EgoSchema videos): API token in ~/.kaggle/access_token (chmod 600)")
+  elif [ "$(kaggle competitions list -s egoschema --csv 2>/dev/null | python -c '
+import csv, sys
+print(next((r.get("userHasEntered", "") for r in csv.DictReader(sys.stdin) if r.get("ref", "").endswith("egoschema-public")), ""))')" = False ]; then
+    problems+=("Kaggle: accept the rules of the egoschema-public competition (kaggle.com/competitions/egoschema-public, 'Join Competition'); downloads are refused until then")
+  fi
+fi
 skipped sa1b || [ -f "${SA1B_LINKS:-$RAW_ROOT/sa1b/sa1b_links.txt}" ] || problems+=("SA-1B: save the link file as $RAW_ROOT/sa1b/sa1b_links.txt (or --skip sa1b)")
 skipped ego4d || grep -q "^\[ego4d\]" "$HOME/.aws/credentials" 2>/dev/null || problems+=("Ego4D: run 'aws configure --profile ego4d' with your Ego4D keys (or --skip ego4d)")
 command -v ego4d >/dev/null 2>&1 || skipped ego4d || problems+=("Ego4D CLI: pip install ego4d awscli")
@@ -70,8 +78,6 @@ declare -A QUEUED   # job name -> "<id> <reason>" of this user's pending / runni
 if command -v squeue >/dev/null 2>&1; then
   while read -r jid jname reason; do QUEUED[$jname]="$jid $reason"; done < <(squeue -u "$ME" -h -o '%i %j %r' 2>/dev/null || true)
 fi
-step_done() { [ "$1" = check ] || [ -f "$STEPS_DIR/${1//[:\/]/_}.ok" ]; }
-
 sub() {  # sub <name> <partition> <time> <deps (colon-separated, may be empty)> <step...>; prints the job id ("" if done)
   local name="$1" part="$2" time="$3" deps="$4"; shift 4
   local s pending="" q id

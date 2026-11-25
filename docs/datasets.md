@@ -32,7 +32,7 @@ Each `make_*.py` accepts `--dry_run` (parse and count only) and `--limit N` (deb
 | VizWiz-VQA | vizwiz.cs.colorado.edu: `images/{train,val,test}.zip`, `vqa_data/Annotations.zip` | train 20,523 / val 4,319 / test 8,000 | image, question, 10 answers, `answer_type`, `answerable` | feature/embedding distillation images (train), logit-distillation QA (train), eval (val; test via EvalAI) |
 | TextVQA 0.5.1 | dl.fbaipublicfiles.com/textvqa: `train_val_images.zip`, `test_images.zip`, `TextVQA_0.5.1_{train,val,test}.json` | train 34,602 / val 5,000 / test 5,734 questions | image, question, 10 answers, `question_id`, `image_classes` | same as VizWiz |
 | WearVQA | HF `tonyliao-meta/WearVQA` (OpenReview link of the NeurIPS 2025 D&B paper) | test | image, question, answer(s), `quality_issues`, `domain`, `task_type` | eval only |
-| EgoBlind | GitHub `doc-doc/EgoBlind` (CSVs) + Google Drive (train data, videos) | test (released half: 1,283 Q), train (Drive CSV) | 16 frames in `[0, t_q]`, timestamps, 4 answers, `type` | distillation frames and QA (train), eval (test) |
+| EgoBlind | GitHub `doc-doc/EgoBlind` (CSVs) + Google Drive (videos) | test (`test.csv`, full: 2,558 answered Q), train (`finetune/train.csv`: 2,746 Q) | 16 frames in `[0, t_q]`, timestamps, 4 answers, `type` | distillation frames and QA (train), eval (test) |
 | EgoTextVQA | GitHub `zhousheng97/EgoTextVQA` (CSVs) + HF `ShengZhou97/EgoTextVQA` or Drive (videos) | test; Outdoor high, Outdoor low, Indoor as separate LMDBs | 16 frames in `[0, t_q]`, answer, `question_type` | eval only (no train split) |
 | EgoSchema | GitHub `egoschema/EgoSchema` (questions) + Kaggle `egoschema-public` (videos) | `subset` (500 with answers), `test` (5,031) | 32 frames per clip, 5 options, answer index (`-1` when hidden) | eval only |
 | CV-Bench | HF `nyu-visionx/CV-Bench` | test 2,638 | image, question, choices, answer index, `task`, `source`, prompt | eval only |
@@ -49,7 +49,8 @@ and the benchmark decontamination blocklist.
 
 Some hosts were reachable while this was written, so the following were checked directly:
 
-* `EgoBlind/test_half_release.csv`: columns `question_id, video_name, question, answer0..3, type, start-time/s`.
+* `EgoBlind/test.csv` (full test set; `test_half_release.csv` is the half released first) and `finetune/train.csv`: columns
+  `question_id, video_name, question, answer0..3, type, start-time/s`. Questions without any reference answer are skipped.
 * `EgoTextVQA/data/egotextvqa_{outdoor,indoor}_annotation.csv`: 4,848 rows / 694 videos and 2,216 rows / 813 videos.
 * `EgoSchema/questions.json`: 5,031 items with `q_uid, question, option 0..4`; `subset_answers.json` maps `q_uid` to an int.
 

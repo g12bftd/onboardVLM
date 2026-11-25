@@ -1,4 +1,4 @@
-# test = test_half_release.csv (publicly released half)
+# test = test.csv (full test set, 2,558 answered questions; answers released on GitHub after the first half)
 name: egoblind
 spec: egoblind
 dataset: {name: lmdb_vqa, path: "${data_root}/egoblind", split: test}
