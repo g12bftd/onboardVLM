@@ -57,14 +57,25 @@ elif ! "$CONDA_BASE/bin/conda" run -n "$ONBOARD_VLM_ENV" python -c \
   problems+=("conda: env '$ONBOARD_VLM_ENV' in $CONDA_BASE missing or without the package (pip install -e '.[data]' in it)")
 fi
 hf auth whoami >/dev/null 2>&1 || problems+=("Hugging Face: run 'hf auth login' (after 'source scripts/paths.sh'), accept the terms of timm/imagenet-1k-wds")
-if ! step_done download:egoschema; then  # EgoSchema videos: a Kaggle token, and the competition rules accepted
-  if ! kaggle competitions files egoschema-public >/dev/null 2>&1; then
-    problems+=("Kaggle: cannot list egoschema-public (EgoSchema videos): API token in ~/.kaggle/access_token (chmod 600)")
-  elif [ "$(kaggle competitions list -s egoschema --csv 2>/dev/null | python -c '
+kaggle_probe() {  # download the smallest file of egoschema-public, as the job will: refused (403) until the rules are accepted
+  local f tmp rc
+  f=$(kaggle competitions files egoschema-public --csv 2>/dev/null | python -c '
 import csv, sys
-print(next((r.get("userHasEntered", "") for r in csv.DictReader(sys.stdin) if r.get("ref", "").endswith("egoschema-public")), ""))')" = False ]; then
-    problems+=("Kaggle: accept the rules of the egoschema-public competition (kaggle.com/competitions/egoschema-public, 'Join Competition'); downloads are refused until then")
-  fi
+lines = sys.stdin.read().splitlines()
+start = next((i for i, l in enumerate(lines) if l.startswith("name,")), len(lines))
+rows = list(csv.DictReader(lines[start:]))
+size = lambda r: int(r["size"]) if str(r.get("size", "")).isdigit() else 1 << 62
+print(min(rows, key=size)["name"] if rows else "")') || return 2
+  [ -n "$f" ] || return 2
+  tmp=$(mktemp -d)
+  timeout 300 kaggle competitions download egoschema-public -f "$f" -p "$tmp" -q >/dev/null 2>&1; rc=$?
+  rm -rf "$tmp"; return "$rc"
+}
+if ! step_done download:egoschema; then  # EgoSchema videos: a Kaggle token, and the competition rules accepted
+  kaggle_probe || case $? in
+    2) problems+=("Kaggle: cannot list the files of egoschema-public (EgoSchema videos): API token in ~/.kaggle/access_token (chmod 600)") ;;
+    *) problems+=("Kaggle: a test download from egoschema-public was refused: accept the competition rules (kaggle.com/competitions/egoschema-public, 'Join Competition'), signed in as the account of your API token") ;;
+  esac
 fi
 skipped sa1b || [ -f "${SA1B_LINKS:-$RAW_ROOT/sa1b/sa1b_links.txt}" ] || problems+=("SA-1B: save the link file as $RAW_ROOT/sa1b/sa1b_links.txt (or --skip sa1b)")
 skipped ego4d || grep -q "^\[ego4d\]" "$HOME/.aws/credentials" 2>/dev/null || problems+=("Ego4D: run 'aws configure --profile ego4d' with your Ego4D keys (or --skip ego4d)")
