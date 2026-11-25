@@ -121,7 +121,9 @@ redone from an empty directory. Monitor progress:
 
 * `squeue -u $USER`;
 * the job logs in `$SLURM_LOG_DIR`;
-* `python scripts/check_data.py`, a summary of what is in place.
+* `python scripts/check_data.py`, a summary of what is in place;
+* `bash scripts/slurm/pipeline_status.sh`: the state of every pipeline job and the end of the log of
+  each job that failed.
 
 A single step can also be submitted on its own (this ignores the markers and runs the step):
 
