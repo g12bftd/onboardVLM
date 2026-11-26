@@ -441,6 +441,28 @@ def test_plot_study_on_synthetic_runs(tmp_path):
     assert {r["series"] for r in rows} == {"4 layers", "8 layers"} and all(r["n_seeds"] == "2" for r in rows)
 
 
+def test_check_data_reports_readiness_and_stale_decontamination(tmp_path):
+    """check_data.py says whether the data is right for training: a blocklist that misses built evaluation data, or a
+    corpus finalized before the current blocklist, is NOT READY."""
+    import hashlib
+
+    raw, lmdb, corpus, evals = (tmp_path / d for d in ("raw", "lmdb", "corpus", "eval"))
+    for d in (raw, lmdb, corpus, evals):
+        d.mkdir()
+    (lmdb / "textvqa").mkdir()
+    json.dump({"num_samples": 5}, open(lmdb / "textvqa" / "val.meta.json", "w"))
+    json.dump({"benchmarks": [], "eval_sets": [], "sha1": [], "dhash": []}, open(corpus / "eval_blocklist.json", "w"))
+    json.dump({"decontamination": {"sha256": "old", "removed": 0}}, open(corpus / "corpus_manifest.json", "w"))
+    env = {**os.environ, "RAW_ROOT": str(raw), "LMDB_ROOT": str(lmdb), "CORPUS_ROOT": str(corpus), "EVAL_ROOT": str(evals), "HF_HOME": str(tmp_path)}
+    out = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "check_data.py")], capture_output=True, text=True, env=env).stdout
+    assert "NOT covered: textvqa" in out and "re-run corpus_finalize" in out and "NOT READY" in out
+    bl = corpus / "eval_blocklist.json"
+    json.dump({"benchmarks": ["textvqa"], "eval_sets": [], "sha1": [], "dhash": []}, open(bl, "w"))
+    json.dump({"decontamination": {"sha256": hashlib.sha256(bl.read_bytes()).hexdigest(), "removed": 3}}, open(corpus / "corpus_manifest.json", "w"))
+    out = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "check_data.py")], capture_output=True, text=True, env=env).stdout
+    assert "NOT covered" not in out and "OK  corpus finalized with the current blocklist" in out
+
+
 def test_plot_study_draws_the_size_grid_against_its_cost(tmp_path):
     """A depth x width grid: heatmaps and the accuracy-vs-cost figure (one line per width, Pareto front), from the
     parameters and GMACs every export records."""

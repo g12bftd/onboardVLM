@@ -74,11 +74,28 @@ def jobs_for(target: str, student_dir: str | None, a) -> list[tuple[str, list[st
                 slug = re.sub(r"[^a-z0-9]+", "_", cat.lower()).strip("_")
                 d = os.path.join(out, "lmms_blind" if blind else "lmms", slug)
                 jobs.append((f"{'lmms_blind' if blind else 'lmms'}/{slug}",
-                             [sys.executable, "-u", "run_lmms_eval.py", "--model", "onboard_gemma4",
+                             [a.lmms_python, "-u", "run_lmms_eval.py", "--model", "onboard_gemma4",
                               "--model_args", model_args + (",blind=True" if blind else ""), "--tasks", ",".join(ts),
                               "--batch_size", "1", "--log_samples", "--output_path", d],
                              os.path.join(d, "**", "*_results.json")))
     return jobs
+
+
+def lmms_python(explicit: str | None) -> str:
+    """The Python of the environment that has lmms-eval: --lmms_python, $ONBOARD_VLM_LMMS_PYTHON, the conda env
+    ``onboardvlm-lmms`` (docs/setup_cscs.md), or this one if it has lmms-eval."""
+    import importlib.util
+
+    if explicit or os.environ.get("ONBOARD_VLM_LMMS_PYTHON"):
+        return explicit or os.environ["ONBOARD_VLM_LMMS_PYTHON"]
+    base = os.environ.get("CONDA_BASE") or (os.path.dirname(os.path.dirname(os.environ["CONDA_EXE"])) if os.environ.get("CONDA_EXE") else "")
+    env = os.environ.get("ONBOARD_VLM_LMMS_ENV", "onboardvlm-lmms")
+    cand = os.path.join(base, "envs", env, "bin", "python") if base else ""
+    if cand and os.path.isfile(cand):
+        return cand
+    if importlib.util.find_spec("lmms_eval") is not None:
+        return sys.executable
+    return ""
 
 
 def done(marker: str) -> bool:
@@ -103,12 +120,19 @@ def main() -> None:
     p.add_argument("--e3_items", type=int, default=500)
     p.add_argument("--lmms_steps", default="first,last", help="exports that get the full general suite: first,last | all | step numbers")
     p.add_argument("--lmms_budget", type=int, default=280)
+    p.add_argument("--lmms_python", default=None, help="python of the lmms-eval environment (default: the onboardvlm-lmms conda env)")
     p.add_argument("--judged", action="store_true", help="also the GPT-judged benchmarks of the suite (needs OPENAI_API_KEY)")
     p.add_argument("--bootstrap", type=int, default=2000)
     p.add_argument("--steps", default=None, help="only these steps (comma-separated), e.g. 0,1000")
     p.add_argument("--extra", nargs="*", default=[], help="Hydra overrides appended to every command (e.g. device=cpu)")
     p.add_argument("--dry_run", action="store_true")
     a = p.parse_args()
+    if "lmms" in a.evals:
+        a.lmms_python = lmms_python(a.lmms_python)
+        if not a.lmms_python and not a.dry_run:
+            sys.exit("[trajectory_eval] lmms-eval not found: create the onboardvlm-lmms env (docs/setup_cscs.md), "
+                     "set ONBOARD_VLM_LMMS_PYTHON, or drop lmms from --evals")
+        a.lmms_python = a.lmms_python or "<lmms-eval python>"
     a.vlm_id = a.vlm_id or {"gemma4_e2b": "google/gemma-4-E2B-it", "gemma4_e4b": "google/gemma-4-E4B-it"}.get(a.teacher_config, "google/gemma-4-E2B-it")
 
     if a.teacher_mode:

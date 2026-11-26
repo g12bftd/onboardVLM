@@ -15,12 +15,17 @@ RUN="${1:?run name}"; STUDENT="${2:-}"; VLM="${3:-google/gemma-4-E2B-it}"; BUDGE
 OUT="${ONBOARD_VLM_OUT:-./outputs}/lmms_eval/${RUN}_b${BUDGET}"
 EXTRA_ARGS="${BLIND:+,blind=True}"
 ARGS="pretrained=${VLM},max_soft_tokens=${BUDGET}${STUDENT:+,student_dir=${STUDENT}}${EXTRA_ARGS}"
-TASKS="${TASKS:-$(python -m onboard_vlm.eval.suites ${JUDGED:+--judged})}"
+TASKS="${TASKS:-$(python -m onboard_vlm.eval.suites ${JUDGED:+--judged})}"   # the suite list needs only onboard_vlm
 echo "[eval_general] $RUN | budget $BUDGET | ${STUDENT:-original encoder}${BLIND:+ | BLIND} | tasks: $TASKS"
-python run_lmms_eval.py --model onboard_gemma4 --model_args "$ARGS" --tasks "$TASKS" \
+PY="${ONBOARD_VLM_LMMS_PYTHON:-}"   # lmms-eval lives in its own env (docs/setup_cscs.md)
+if [ -z "$PY" ]; then
+  BASE="${CONDA_BASE:-${CONDA_EXE:+$(dirname "$(dirname "$CONDA_EXE")")}}"
+  if [ -n "$BASE" ] && [ -x "$BASE/envs/onboardvlm-lmms/bin/python" ]; then PY="$BASE/envs/onboardvlm-lmms/bin/python"; else PY=python; fi
+fi
+"$PY" run_lmms_eval.py --model onboard_gemma4 --model_args "$ARGS" --tasks "$TASKS" \
   --batch_size 1 --log_samples --output_path "$OUT/image"
 if [ -n "${VIDEO:-}" ]; then
   VARGS="pretrained=${VLM},max_soft_tokens=70${STUDENT:+,student_dir=${STUDENT}}${EXTRA_ARGS}"
-  python run_lmms_eval.py --model onboard_gemma4 --model_args "$VARGS" --tasks "videomme,mvbench" \
+  "$PY" run_lmms_eval.py --model onboard_gemma4 --model_args "$VARGS" --tasks "videomme,mvbench" \
     --batch_size 1 --log_samples --output_path "$OUT/video"
 fi

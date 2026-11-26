@@ -21,6 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 BENCHMARKS = ["vizwiz", "textvqa", "wearvqa", "egoblind", "egotextvqa_outdoor_high", "egotextvqa_outdoor_low", "egotextvqa_indoor", "egoschema", "cvbench"]
+E3_MINI = {"textvqa", "cvbench"}  # the per-checkpoint downstream benchmarks; the others are an application check only
 missing: list[str] = []
 
 
@@ -57,7 +58,8 @@ def main() -> None:
     for b in BENCHMARKS:
         metas = sorted(glob.glob(os.path.join(lmdb_root, b, "*.meta.json")))
         counts = {os.path.basename(m)[: -len(".meta.json")]: json.load(open(m))["num_samples"] for m in metas}
-        ok(bool(counts), b, ", ".join(f"{k} {v:,}" for k, v in counts.items()))
+        ok(bool(counts), b, ", ".join(f"{k} {v:,}" for k, v in counts.items()) + ("" if b in E3_MINI else "  (optional: application check)"),
+           optional=b not in E3_MINI)
 
     print(f"\nEvaluation image sets: processed {evals}")
     reg = yaml.safe_load(open(os.path.join(ROOT, "make_datasets", "eval_sets", "eval_sets.yaml")))["sets"]
@@ -89,11 +91,77 @@ def main() -> None:
     man = os.path.join(corpus, "corpus_manifest.json")
     if os.path.isfile(man):
         m = json.load(open(man))
-        print(f"  manifest: {m['total_built']:,} built -> {m['total_kept']:,} kept | splits {m['splits']} | see {corpus}/CORPUS_CARD.md")
+        if "total_built" in m:
+            print(f"  manifest: {m['total_built']:,} built -> {m['total_kept']:,} kept | splits {m.get('splits')} | see {corpus}/CORPUS_CARD.md")
 
+    readiness(lmdb_root, evals, corpus, raw, reg, spec)
     print(f"\n{len(missing)} item(s) missing" + (": " + ", ".join(missing) if missing else ""))
     if args.strict and missing:
         sys.exit(1)
+
+
+def readiness(lmdb_root: str, evals: str, corpus: str, raw: str, reg: dict, spec: list) -> None:
+    """Is the data right for the first experiments (docs/methods.md): decontamination complete and applied, the training
+    corpus finalized, and every evaluation input in place?"""
+    import hashlib
+    import subprocess
+
+    print("\nReadiness for the first experiments (references, identity, lr, grid)")
+    issues: list[str] = []
+    built_bench = sorted(b for b in BENCHMARKS if glob.glob(os.path.join(lmdb_root, b, "*.meta.json")))
+    built_sets = sorted(n for n, sp in reg.items() if "blocklist" in sp["roles"] and os.path.isfile(os.path.join(evals, n, ".done")))
+    bl_path = os.path.join(corpus, "eval_blocklist.json")
+    bl = json.load(open(bl_path)) if os.path.isfile(bl_path) else None
+    if bl is None:
+        issues.append("no blocklist: run the blocklist step, then corpus_finalize")
+        ok(False, "decontamination: blocklist", "missing")
+    else:
+        uncovered = [b for b in built_bench if b not in (bl.get("benchmarks") or [])] + [n for n in built_sets if n not in (bl.get("eval_sets") or [])]
+        ok(not uncovered, "decontamination: blocklist covers what is built",
+           f"{len(bl.get('benchmarks') or [])} benchmarks + {len(bl.get('eval_sets') or [])} eval sets" + (f"; NOT covered: {', '.join(uncovered)}" if uncovered else ""))
+        if uncovered:
+            issues.append("rebuild the blocklist and re-run corpus_finalize (new evaluation data since the last build)")
+    not_built = [n for n, sp in reg.items() if "blocklist" in sp["roles"] and n not in built_sets]
+    ok(not not_built, "decontamination: every evaluation set built", "" if not not_built else
+       f"not built (not blocklisted): {', '.join(not_built)} -- fine for preliminary runs, required for paper numbers", optional=True)
+    man_path = os.path.join(corpus, "corpus_manifest.json")
+    man = json.load(open(man_path)) if os.path.isfile(man_path) else None
+    if man is None:
+        issues.append("corpus not finalized: run corpus_finalize")
+        ok(False, "corpus finalized", "no corpus_manifest.json")
+    else:
+        dec = man.get("decontamination") or {}
+        current = bl is not None and dec.get("sha256") == hashlib.sha256(open(bl_path, "rb").read()).hexdigest()
+        ok(current, "corpus finalized with the current blocklist", f"{dec.get('removed', 0):,} images removed" if current else
+           "the blocklist changed after finalize: re-run corpus_finalize")
+        if not current:
+            issues.append("re-run corpus_finalize (the blocklist changed after it)")
+        if man.get("preliminary"):
+            print(f"  ..  preliminary corpus: sources not built: {', '.join(man.get('missing_sources') or [])} (train with allow_missing_sources=true)")
+    lite = {"cc12m", "imagenet1k", "openimages", "sa1b", "text_rich/pixmo_docs", "text_rich/synthdog_en", "text_rich/cauldron/*"}
+    for src in spec:
+        if src["dir"] not in lite:
+            continue
+        dirs = sorted(d for d in glob.glob(os.path.join(corpus, src["dir"])) if os.path.isdir(d))
+        fin = bool(dirs) and all(os.path.isfile(os.path.join(d, "keep.npz")) for d in dirs)
+        if not fin and src["dir"] != "sa1b":
+            issues.append(f"training source {src['dir']} not built / finalized")
+    ok(all(os.path.isfile(os.path.join(evals, n, ".done")) for n, sp in reg.items() if "fidelity" in sp["roles"] and n in
+           {"coco_val2017", "ade20k_val", "imagenet1k_val", "docvqa_val", "infovqa_val", "chartqa_test", "realworldqa"}),
+       "E1: the 7 held-out fidelity sets", "", optional=True)
+    e2 = len(glob.glob(os.path.join(raw, "imagenet1k", "imagenet1k-train-*.tar"))) > 0 and len(glob.glob(os.path.join(evals, "nyuv2", "test", "*[0-9].png"))) > 0
+    ok(e2, "E2: ImageNet-1k train tars + NYUv2", "", optional=True)
+    e3 = all(b in built_bench for b in E3_MINI)
+    ok(e3, "E3 per checkpoint: TextVQA + CV-Bench LMDBs", "", optional=True)
+    base = os.environ.get("CONDA_BASE") or (os.path.dirname(os.path.dirname(os.environ["CONDA_EXE"])) if os.environ.get("CONDA_EXE") else "")
+    py = os.environ.get("ONBOARD_VLM_LMMS_PYTHON") or os.path.join(base, "envs", "onboardvlm-lmms", "bin", "python")
+    has_lmms = os.path.isfile(py) and subprocess.run([py, "-c", "import lmms_eval"], capture_output=True).returncode == 0
+    ok(has_lmms, "general suite: lmms-eval environment", py if has_lmms else
+       f"{py} cannot import lmms_eval (docs/setup_cscs.md; or run with --evals e1,e2,e3)", optional=True)
+    for x, what in ((e2, "E2 inputs"), (e3, "E3 benchmark LMDBs"), (has_lmms, "the lmms-eval env")):
+        if not x:
+            issues.append(f"evaluation: {what} missing")
+    print("  => " + ("READY for training and evaluation" if not issues else "NOT READY:\n     - " + "\n     - ".join(issues)))
 
 
 if __name__ == "__main__":
