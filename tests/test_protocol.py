@@ -129,6 +129,46 @@ def test_data_module_trains_every_budget_and_evaluates_per_budget():
         DistillDataModule(train=[{"name": "synthetic"}], sampling={"budgets": [1120]}, input_domain={"budgets": [70]})
 
 
+def test_preliminary_runs_leave_out_sources_not_built(tmp_path):
+    """allow_missing_sources: entries whose data is not on disk are left out (logged), the mixture
+    renormalises over the rest; without it a missing source is an error."""
+    from PIL import Image
+
+    from onboard_vlm.data.data_module import DistillDataModule
+
+    src = tmp_path / "src"
+    src.mkdir()
+    for i in range(16):
+        Image.effect_mandelbrot((200 + 8 * i, 150), (-2, -1.5 + 0.05 * i, 1, 1.5), 30 + i).convert("RGB").save(src / f"{i}.png")
+    built = tmp_path / "corpus" / "built"
+    _run("make_datasets/corpus/make_image_corpus.py", "--source", "folder", "--input_path", str(src), "--name", "b",
+         "--output_path", str(built), "--min_side", "1", "--min_std", "0")
+    absent = str(tmp_path / "corpus" / "not_built")
+    kw = dict(
+        train=[{"name": "image_corpus", "root": str(built), "group": "web", "weight": 0.3},
+               {"name": "image_corpus", "root": absent, "group": "scenes", "weight": 0.5},
+               {"name": "image_corpus", "root": [str(built), absent], "group": "mixed", "weight": 0.2},
+               {"name": "target_train", "data_root": str(tmp_path / "lmdb"), "group": "target", "weight": 0.1}],
+        val=[{"name": "image_corpus", "root": absent, "split": "val", "group": "scenes"},
+             {"name": "image_corpus", "root": str(built), "split": "val", "group": "web"}],
+        dataset_defaults={"image_corpus": {"val_fraction": 0.3, "test_fraction": 0.0}},
+        sampling={"mode": "crop", "budgets": [70], "tokens_per_batch": 280}, evaluation={"val_budgets": [70], "tokens_per_batch": 280},
+        input_domain={"budgets": [70], "max_aspect": 4.0}, samples_per_epoch=8, num_workers=0, pin_memory=False,
+    )
+    with pytest.raises(FileNotFoundError):
+        DistillDataModule(**kw).setup()
+    dm = DistillDataModule(**kw, allow_missing_sources=True)
+    dm.setup()
+    from onboard_vlm.data.corpus import ImageCorpusDataset
+
+    n_train = len(ImageCorpusDataset(str(built), split="train", val_fraction=0.3, test_fraction=0.0))
+    assert dm.groups == ["web", "mixed"] and dm.mix_weights == [0.3, 0.2] and len(dm.train_set) == 2 * n_train > 0
+    assert list(dm.val_sets) == ["web"] and dm.val_groups == [("web", 70)] and 0 < len(dm.val_sets["web"]) < 16
+    left_out = {(m["split"], m["group"]) for m in dm.missing_sources if m["left_out"]}
+    assert left_out == {("train", "scenes"), ("train", "target"), ("val", "scenes")}
+    assert next(iter(dm.train_dataloader())).valid_token_mask.all()
+
+
 # ------------------------------------------------------------------------------------------- fidelity
 def test_fidelity_metrics_are_per_token_scale_invariant():
     torch.manual_seed(0)
@@ -191,7 +231,10 @@ def test_generate_teacher_responses_and_train_on_them(tmp_path):
 def test_run_fidelity_end_to_end(tmp_path):
     _run("run_fidelity.py", "teacher=gemma4_tiny", "device=cpu", "dtype=float32", "num_workers=0", "run_name=t", f"output_root={tmp_path}",
          "student={name: gemma4_truncated, num_layers: 3, out_dim: 48}", "input_domain={budgets: [70, 140], max_aspect: 4.0}",
-         "tokens_per_batch=280", "bootstrap.n=200", "sets=[{name: syn, group: g, dataset: {name: synthetic, num_samples: 6, max_side: 400}}]")
+         "tokens_per_batch=280", "bootstrap.n=200", "allow_missing_sources=true",
+         f"sets=[{{name: syn, group: g, dataset: {{name: synthetic, num_samples: 6, max_side: 400}}}}, "
+         f"{{name: not_built, group: g, dataset: {{name: lmdb_vqa, path: {tmp_path}/none, split: val}}}}]")
+    assert [s["set"] for s in json.load(open(tmp_path / "fidelity" / "t" / "skipped_sets.json"))] == ["not_built"]
     summ = json.load(open(tmp_path / "fidelity" / "t" / "summary.json"))
     rows = [json.loads(line) for line in open(tmp_path / "fidelity" / "t" / "per_image.jsonl")]
     assert {e["budget"] for e in summ["sets"]} == {70, 140} and rows
@@ -210,6 +253,20 @@ def test_statistics():
     assert stats.mcnemar([1, 1, 1, 0] * 10, [0, 0, 0, 0] * 10)["p"] < 1e-6
     assert stats.mcnemar([1, 0] * 10, [0, 1] * 10)["p"] == 1.0
     assert stats.holm({"a": 0.01, "b": 0.04, "c": 0.03}) == {"a": 0.03, "c": 0.06, "b": 0.06}
+
+
+def test_seed_and_item_bootstrap():
+    """One seed each: identical to the paired bootstrap. Several seeds with a seed effect: the CI widens."""
+    rng = np.random.default_rng(0)
+    item = rng.normal(0, 1, 1500)
+    a, b = item + 0.05 + rng.normal(0, 0.2, 1500), item + rng.normal(0, 0.2, 1500)
+    h, p = stats.hierarchical_paired_bootstrap([a], [b], n_boot=2000), stats.paired_bootstrap(a, b, n_boot=2000)
+    assert h["diff"] == pytest.approx(p["diff"]) and abs((h["hi"] - h["lo"]) - (p["hi"] - p["lo"])) < 0.005
+    seeds = [item + 0.05 + off + rng.normal(0, 0.2, 1500) for off in (-0.05, 0.0, 0.05)]
+    h3 = stats.hierarchical_paired_bootstrap(seeds, [b], n_boot=2000)
+    first = stats.paired_bootstrap(seeds[0], b, n_boot=2000)
+    assert h3["seeds"] == [3, 1] and (h3["hi"] - h3["lo"]) > 2 * (first["hi"] - first["lo"])
+    assert h3["lo"] < 0.05 < h3["hi"]
 
 
 def test_aggregate_results(tmp_path):

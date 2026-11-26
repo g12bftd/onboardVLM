@@ -14,7 +14,8 @@
 #         (steps: blocklist text_rich openimages sa1b imagenet1k cc12m ego4d epic_kitchens finalize; default all;
 #          imagenet21k is an optional alternative to imagenet1k: OBJECTS_SOURCE=imagenet21k)
 # The benchmark LMDBs ($LMDB_ROOT, make_datasets/build_all_lmdb.sh) and the evaluation image sets ($EVAL_ROOT,
-# make_datasets/eval_sets/build_eval_sets.py) must exist before step 1: the blocklist covers all of them.
+# make_datasets/eval_sets/build_eval_sets.py) must exist before step 1. The blocklist covers those built so
+# far, is rebuilt when more are built, and is re-applied to the whole corpus by finalize.
 set -euo pipefail
 RAW_ROOT="${RAW_ROOT:-./data/raw}"
 LMDB_ROOT="${LMDB_ROOT:-${ONBOARD_VLM_DATA:-./data/lmdb}}"
@@ -38,9 +39,22 @@ parallel() {  # parallel <n_workers> <builder.py> <args...>   (one process per w
 }
 img() { parallel "$1" $C/make_image_corpus.py "${@:2}" --blocklist "$BL"; }
 
-step_blocklist() {
+BENCHMARKS=(vizwiz textvqa wearvqa egoblind egotextvqa_outdoor_high egotextvqa_outdoor_low egotextvqa_indoor egoschema cvbench)
+built_benchmarks() { local b; for b in "${BENCHMARKS[@]}"; do [ -f "$LMDB_ROOT/$b/.done" ] && echo "$b"; done; return 0; }
+eval_sets() { local d; for d in "$EVAL_ROOT"/*/; do [ -d "$d" ] && basename "$d"; done; return 0; }
+blocklist_current() {  # does $BL cover exactly the benchmarks and evaluation sets built now?
+  [ -f "$BL" ] || return 1
+  python -c 'import json, sys; bl = json.load(open(sys.argv[1]))
+sys.exit(0 if (sorted(bl.get("benchmarks", [])), sorted(bl.get("eval_sets", []))) == (sorted(sys.argv[2].split()), sorted(sys.argv[3].split())) else 1)' \
+    "$BL" "$(built_benchmarks | tr '\n' ' ')" "$(eval_sets | tr '\n' ' ')"
+}
+step_blocklist() {  # every benchmark built so far (<name>/.done) and every evaluation image set
+  local built missing=() b
+  mapfile -t built < <(built_benchmarks)
+  for b in "${BENCHMARKS[@]}"; do [[ " ${built[*]} " == *" $b "* ]] || missing+=("$b"); done
+  [ ${#missing[@]} -eq 0 ] || echo "     WARNING: benchmarks not built yet, not in the blocklist: ${missing[*]}"
   python -u $C/make_eval_blocklist.py \
-    --lmdb_dirs "$LMDB_ROOT"/{vizwiz,textvqa,wearvqa,egoblind,egotextvqa_outdoor_high,egotextvqa_outdoor_low,egotextvqa_indoor,egoschema,cvbench} \
+    --lmdb_dirs "${built[@]/#/$LMDB_ROOT/}" \
     --corpus_dirs "$EVAL_ROOT"/* \
     --egoschema_uid_map "$RAW_ROOT/egoschema/repo/uid_to_ego4d.json" --output "$BL"
 }
@@ -71,7 +85,12 @@ step_epic_kitchens() {
   parallel "$WORKERS" $C/make_frame_corpus.py --input_path "$RAW_ROOT/epic_kitchens/EPIC-KITCHENS" --fps 0.5 \
     --name epic_kitchens --output_path "$CORPUS_ROOT/egocentric/epic_kitchens" --blocklist "$BL"
 }
-step_finalize() { python -u $C/finalize_corpus.py --corpus_root "$CORPUS_ROOT" --sources_yaml $C/sources.yaml; }
+# Decontamination is re-applied here against the current blocklist, so a blocklist that grew after the
+# sources were built (more benchmarks) only needs this step again, not a rebuild of every source.
+step_finalize() {
+  python -u $C/finalize_corpus.py --corpus_root "$CORPUS_ROOT" --sources_yaml $C/sources.yaml --blocklist "$BL" \
+    ${ALLOW_MISSING:+--allow_missing}
+}
 
 out_dir() {  # processed output of a source step ("" = not a source)
   case "$1" in
@@ -87,8 +106,8 @@ STEPS=("$@")
 for s in "${STEPS[@]}"; do
   echo "===> corpus step: $s ($(date))"
   out="$(out_dir "$s")"
-  if [ "$s" = blocklist ] && [ -f "$BL" ] && [ -z "${FORCE_BLOCKLIST:-}" ]; then
-    echo "     $BL exists (FORCE_BLOCKLIST=1 to rebuild it; then rebuild every source)"; continue
+  if [ "$s" = blocklist ] && [ -z "${FORCE_BLOCKLIST:-}" ] && blocklist_current; then
+    echo "     $BL covers every benchmark and evaluation set built so far (FORCE_BLOCKLIST=1 to rebuild it)"; continue
   fi
   if [ -n "$out" ] && [ -f "$out/.done" ]; then
     echo "     $out already built (delete it to rebuild)"; continue

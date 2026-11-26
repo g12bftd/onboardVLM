@@ -8,8 +8,12 @@
 #
 # --dl-partition: partition for the download jobs (default: --partition; use a data-transfer partition if
 #                 your cluster has one and it reaches the internet: `sinfo -s`).
-# --skip:         corpus sources not to download / build yet, e.g. while their licence is pending (their jobs
-#                 and corpus_finalize are not submitted).
+# --skip:         sources not to download / build yet, e.g. while a licence is pending or a download is broken:
+#                 corpus sources (sa1b, ego4d, epic_kitchens, cc12m, ...) and benchmarks (egoblind, egotextvqa, ...).
+#                 The rest is processed: benchmarks are built one by one, the blocklist covers those built, and
+#                 corpus_finalize makes a PRELIMINARY corpus of the sources built (marked as such). These steps
+#                 are left unfinished, so re-running this script without --skip completes them later; corpus
+#                 sources need no rebuild, as finalize re-applies the grown blocklist.
 #
 # Safe to re-run at any time, e.g. without --skip once a licence has arrived, or after a failed job:
 #   * a step that finished leaves $DATA_ROOT/.steps/<step>.ok (prepare_all.sh) and is not submitted again
@@ -42,6 +46,18 @@ OBJECTS="${OBJECTS_SOURCE:-imagenet1k}"
 ME="${USER:-$(id -un)}"
 STEPS_DIR="${DATA_ROOT:-$ONBOARD_VLM_ROOT/data}/.steps"   # written by prepare_all.sh after each finished step
 skipped() { [[ "$SKIP" == *",$1,"* ]]; }
+# benchmark LMDBs not to build (build_all_lmdb.sh); EgoTextVQA-Indoor needs only the EgoSchema clips and the
+# annotation CSV of the EgoTextVQA repo, so it is built whenever those are there
+skip_lmdb=()
+for b in vizwiz textvqa wearvqa egoblind egoschema cvbench; do skipped "$b" && skip_lmdb+=("$b"); done
+skipped egotextvqa && skip_lmdb+=(egotextvqa_outdoor)
+if skipped egoschema || { skipped egotextvqa && [ ! -f "$RAW_ROOT/egotextvqa/egotextvqa_indoor_annotation.csv" ]; }; then
+  skip_lmdb+=(egotextvqa_indoor)
+fi
+export SKIP_BENCHMARKS="${skip_lmdb[*]:-}"
+corpus_skipped=""
+for c in text_rich openimages cc12m sa1b epic_kitchens ego4d "$OBJECTS"; do skipped "$c" && corpus_skipped+=" $c"; done
+export ALLOW_MISSING="${corpus_skipped:+1}"   # corpus_finalize: a preliminary corpus without them
 step_done() { [ "$1" = check ] || [ -f "$STEPS_DIR/${1//[:\/]/_}.ok" ]; }
 # conda for the jobs: the installation of this shell (CONDA_EXE is set once conda is initialised), unless
 # CONDA_BASE is set; env ONBOARD_VLM_ENV (default onboardvlm). Both are passed on to the jobs.
@@ -118,7 +134,9 @@ echo "data pipeline (${DRY:+dry run, }conda env $ONBOARD_VLM_ENV in $CONDA_BASE,
 
 # ---- downloads (parallel) ------------------------------------------------------------------------------
 J[models]=$(sub models "$DLPART" "$TIME" "" models)
-for b in vizwiz textvqa wearvqa egoblind egotextvqa egoschema cvbench; do J[dl_$b]=$(sub "dl-$b" "$DLPART" "$TIME" "" "download:$b"); done
+for b in vizwiz textvqa wearvqa egoblind egotextvqa egoschema cvbench; do
+  J[dl_$b]=""; skipped "$b" || J[dl_$b]=$(sub "dl-$b" "$DLPART" "$TIME" "" "download:$b")
+done
 J[eval_sets]=$(sub eval-sets "$DLPART" "$TIME" "" eval_sets)
 J[probe]=$(sub probe-data "$DLPART" "$TIME" "" probe_data)           # ImageNet-1k train (also the corpus objects source) + NYUv2
 for c in text_rich openimages cc12m sa1b epic_kitchens; do
@@ -127,8 +145,8 @@ done
 [ "$OBJECTS" = imagenet21k ] && J[dl_imagenet21k]=$(sub dl-imagenet21k "$DLPART" "$TIME" "" download:imagenet21k)
 
 # ---- benchmark LMDBs, blocklist, Ego4D ---------------------------------------------------------------------
-J[extract]=$(sub bench-extract "$PART" 04:00:00 "$(join "${J[dl_egoblind]}" "${J[dl_egotextvqa]}")" benchmarks_extract)
-bench_deps=$(join "${J[dl_vizwiz]}" "${J[dl_textvqa]}" "${J[dl_wearvqa]}" "${J[dl_egoschema]}" "${J[dl_cvbench]}" "${J[extract]}")
+J[extract]=""; skipped egoblind || J[extract]=$(sub bench-extract "$PART" 04:00:00 "${J[dl_egoblind]}" benchmarks_extract)  # EgoBlind zips
+bench_deps=$(join "${J[dl_vizwiz]}" "${J[dl_textvqa]}" "${J[dl_wearvqa]}" "${J[dl_egoschema]}" "${J[dl_cvbench]}" "${J[dl_egotextvqa]}" "${J[extract]}")
 J[lmdb]=$(sub bench-lmdb "$PART" "$TIME" "$bench_deps" benchmarks_lmdb)
 J[blocklist]=$(sub blocklist "$PART" "$TIME" "$(join "${J[lmdb]}" "${J[eval_sets]}")" blocklist)
 skipped ego4d || J[dl_ego4d]=$(sub dl-ego4d "$DLPART" "$TIME" "${J[blocklist]}" download:ego4d)
@@ -144,11 +162,11 @@ for c in text_rich openimages cc12m sa1b epic_kitchens ego4d "$OBJECTS"; do
   J[build_$c]=$(sub "corpus-$c" "$PART" "$TIME" "$(join "$dl" "${J[blocklist]}")" "corpus:$c")
   builds+=("${J[build_$c]}")
 done
-if [ -z "$SKIP" ]; then
-  J[finalize]=$(sub corpus-finalize "$PART" 06:00:00 "$(join "${builds[@]}")" corpus_finalize check)
-else
+J[finalize]=$(sub corpus-finalize "$PART" 06:00:00 "$(join "${builds[@]}" "${J[blocklist]}")" corpus_finalize check)
+if [ -n "$SKIP" ]; then
   s="${SKIP#,}"; s="${s%,}"
-  echo "NOTE: skipped ${s//,/ }: corpus_finalize is submitted when you re-run this script without --skip." >&2
+  echo "NOTE: skipped ${s//,/ }: benchmarks not built: ${SKIP_BENCHMARKS:-none}; corpus sources left out:${corpus_skipped:- none}." >&2
+  echo "      The corpus is PRELIMINARY; re-run this script without --skip to complete it (no source is rebuilt)." >&2
 fi
 
 echo "logs: $SLURM_LOG_DIR | watch: squeue -u $ME -o '%.10i %.28j %.8T %.10M %R' | status: python scripts/check_data.py" >&2

@@ -20,6 +20,7 @@ from typing import Any, Sequence
 import pytorch_lightning as pl
 from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
+from onboard_vlm.data.availability import available
 from onboard_vlm.data.collator import DualViewCollator
 from onboard_vlm.data.samplers import BucketedBatchSampler, ExactShapeBatchSampler, MixtureSampler, SizeBucketBatchSampler
 from onboard_vlm.geometry import InputDomain
@@ -147,6 +148,7 @@ class DistillDataModule(pl.LightningDataModule):
         bucket_by_size: bool = False,
         pin_memory: bool = True,
         seed: int = 0,
+        allow_missing_sources: bool = False,
     ):
         super().__init__()
         train, val, test, defaults, collator, val_collator, text, mixture = map(
@@ -189,6 +191,8 @@ class DistillDataModule(pl.LightningDataModule):
             if bad:
                 raise ValueError(f"training budgets {sorted(bad)} are outside the input domain {list(self.domain.budgets)}")
         self.bucket_by_size = bucket_by_size
+        self.allow_missing_sources = allow_missing_sources
+        self.missing_sources: list[dict[str, Any]] = []  # what a preliminary run left out (allow_missing_sources)
         self.train_set = None
         self.val_sets: dict[str, ConcatDataset] = {}
         self.test_sets: dict[str, ConcatDataset] = {}
@@ -225,6 +229,8 @@ class DistillDataModule(pl.LightningDataModule):
                 log.info("     mixture: %s", ", ".join(f"{k}={v}" for k, v in self.mixture.items()))
             if self.drop_groups:
                 log.info("     ablation: dropping groups %s (weight 0)", self.drop_groups)
+            if self.allow_missing_sources:
+                self._leave_out_missing()
             text_builder = build_text_builder(self.text_cfg)
             self.train_parts = []
             for i, c in enumerate(self.train_cfgs):
@@ -244,6 +250,34 @@ class DistillDataModule(pl.LightningDataModule):
             log.info("     num_workers=%d | samples_per_epoch=%s%s", self.num_workers, self.samples_per_epoch,
                      "" if self.sampling else f" | legacy padded batches of {self.batch_size} (eval {self.val_batch_size})")
         self._is_setup = True
+
+    def _leave_out_missing(self) -> None:
+        """Preliminary runs: drop entries whose data is not on disk; the mixture renormalises over the rest."""
+
+        def keep(split: str, i: int, c: dict[str, Any], group: str | None) -> dict[str, Any] | None:
+            c2, note = available(c)
+            if c2 is None or note:
+                self.missing_sources.append({"split": split, "index": i, "group": group, "dataset": _describe(c), "note": note,
+                                             "left_out": c2 is None})
+                log.warning("     PRELIMINARY: %s[%d] [%s] %s: %s%s", split, i, group or "-", _describe(c), note,
+                            " -> left out" if c2 is None else "")
+            return c2
+
+        kept = [(c2, g, w) for i, (c, g, w) in enumerate(zip(self.train_cfgs, self.groups, self.mix_weights or [None] * len(self.groups)))
+                if (c2 := keep("train", i, c, g)) is not None]
+        if not kept:
+            raise FileNotFoundError("allow_missing_sources: none of the training datasets is on disk")
+        self.train_cfgs, self.groups = [k[0] for k in kept], [k[1] for k in kept]
+        if self.mix_weights is not None:
+            self.mix_weights = [k[2] for k in kept]
+            if not sum(self.mix_weights) > 0:
+                raise FileNotFoundError("allow_missing_sources: every training dataset on disk has mixture weight 0")
+        for split in ("val", "test"):
+            cfgs = getattr(self, f"{split}_cfgs")
+            setattr(self, f"{split}_cfgs", [c2 for i, c in enumerate(cfgs) if (c2 := keep(split, i, c, c.get("group"))) is not None])
+        if self.missing_sources:
+            log.warning("     PRELIMINARY run: %d entries changed or left out because their data is not on disk; "
+                        "the mixture is renormalised over the rest", len(self.missing_sources))
 
     def _build_eval_sets(self, split: str, cfgs: list[dict[str, Any]]) -> dict[str, ConcatDataset]:
         parts: dict[str, list] = {}

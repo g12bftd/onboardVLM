@@ -6,6 +6,7 @@ eval_root: ${oc.env:ONBOARD_VLM_EVAL,./data/eval_sets}
 output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
 corpus_split: {val_fraction: 0.002, test_fraction: 0.002, split_seed: 0}
 objects_source: imagenet1k   # = config/defaults.yaml
+allow_missing_sources: false # preliminary runs: skip sets whose data is not built yet (listed in skipped_sets.json)
 input_domain: {budgets: [70, 140, 280, 560, 1120], max_aspect: 4.0}
 
 run_name: student

@@ -76,3 +76,4 @@ collator: {train: true, crop_scale: [0.35, 1.0], hflip_prob: 0.0}   # crop area 
 val_collator: {train: false}                                         # full images, bit-exact processor geometry
 num_workers: ${num_workers}
 seed: ${seed}
+allow_missing_sources: ${allow_missing_sources}   # preliminary runs only: leave out sources not built yet

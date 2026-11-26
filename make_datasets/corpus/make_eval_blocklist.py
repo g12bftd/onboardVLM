@@ -93,10 +93,16 @@ def main() -> None:
         "video_ids": sorted(vids),
         "video_spans": spans,
         "counts": counts,
+        # what this list covers: build_corpus.sh rebuilds it when more benchmarks are built, and
+        # finalize_corpus.py re-applies it to the whole corpus
+        "benchmarks": sorted(os.path.basename(os.path.normpath(d)) for d in args.lmdb_dirs),
+        "eval_sets": sorted(os.path.basename(os.path.normpath(d)) for d in args.corpus_dirs),
     }
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
-    with open(args.output, "w") as f:
+    tmp = args.output + ".tmp"  # atomic: builders running elsewhere never read a half-written list
+    with open(tmp, "w") as f:
         json.dump(out, f)
+    os.replace(tmp, args.output)
     print(f"wrote {args.output}: {len(sha)} images/frames, {sum(map(len, ids.values()))} source ids, {len(vids)} Ego4D videos")
 
 

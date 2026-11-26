@@ -103,7 +103,7 @@ run_fidelity.py  run_probe.py  run_eval.py  run_lmms_eval.py  run_profile.py  ru
 scripts/  eval_general.sh  aggregate_results.py    # E3 general suite; paper tables with CIs
 scripts/  paths.sh  check_data.py  slurm/                       # data layout, status, batch jobs (submit_data_pipeline.sh)
 make_datasets/prepare_all.sh                       # every dataset: download -> processed, in order
-docs/  protocol.md  setup_cscs.md  design.md  corpus.md  datasets.md  metrics.md
+docs/  protocol.md  preliminary.md  setup_cscs.md  design.md  corpus.md  datasets.md  metrics.md
 ```
 
 ## Install

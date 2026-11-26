@@ -79,6 +79,9 @@ conda create -y --name onboardvlm-lmms --clone onboardvlm && conda run -n onboar
 
 ## 4. Data: every download and processing step as batch jobs
 
+(Training and evaluation jobs: `scripts/slurm/run.sbatch <entry point> <overrides>`, one GH200 node;
+see [preliminary.md](preliminary.md) for the commands.)
+
 ```bash
 cd /users/$USER/repos/onboardVLM && git pull && conda activate onboardvlm && source scripts/paths.sh
 bash scripts/slurm/submit_data_pipeline.sh --account <project> --dry-run      # prints the job graph
@@ -108,8 +111,11 @@ Options:
   reaches the internet (`sinfo -s`). Otherwise they use `--partition` (default `normal`), where each
   download job holds a whole node for its duration, charged to your allocation.
 * `--time`: default 24 h.
-* `--skip sa1b,ego4d`: leave out sources whose access is still pending. Everything else starts now;
-  `corpus-finalize` waits until you re-run the script without `--skip` once the access is in place.
+* `--skip sa1b,ego4d,egoblind`: leave out corpus sources or benchmarks whose access or download is not
+  complete. Everything else is processed, and `corpus-finalize` makes a **preliminary** corpus of what is
+  built (marked as such in `corpus_manifest.json`). Re-run the script without `--skip` once the access is
+  in place: the missing parts are built and the corpus is finalized again; no source is rebuilt. Running
+  experiments on a preliminary corpus: [preliminary.md](preliminary.md).
 
 The submit script is safe to re-run at any time and only submits what is missing:
 

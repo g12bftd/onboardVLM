@@ -56,3 +56,37 @@ class NearDupIndex:
 
     def __len__(self) -> int:
         return sum(len(v) for v in self.tables[0].values())
+
+
+def near_dup_mask(hashes, blocked, max_dist: int = 4):
+    """Bool mask over ``hashes`` (uint64 array): True where some ``blocked`` hash is within ``max_dist`` bits.
+
+    Vectorised :class:`NearDupIndex` for whole corpora (tens of millions of hashes): the same
+    ``max_dist + 1`` bands (pigeonhole), with candidates compared per band value as small XOR /
+    popcount matrices. Callers exclude degenerate hashes, as the builders do.
+    """
+    import numpy as np
+
+    hashes, blocked = np.asarray(hashes, dtype=np.uint64), np.unique(np.asarray(blocked, dtype=np.uint64))
+    hit = np.zeros(len(hashes), dtype=bool)
+    if len(hashes) == 0 or len(blocked) == 0:
+        return hit
+    bands = max_dist + 1
+    width = 64 // bands
+    mask = np.uint64((1 << width) - 1)
+    for i in range(bands):
+        shift = np.uint64(i * width)
+        hk, bk = (hashes >> shift) & mask, (blocked >> shift) & mask
+        h_order, b_order = np.argsort(hk, kind="stable"), np.argsort(bk, kind="stable")
+        hk_s, bk_s = hk[h_order], bk[b_order]
+        common = np.intersect1d(hk_s, bk_s, assume_unique=False)
+        h_lo, h_hi = np.searchsorted(hk_s, common, "left"), np.searchsorted(hk_s, common, "right")
+        b_lo, b_hi = np.searchsorted(bk_s, common, "left"), np.searchsorted(bk_s, common, "right")
+        for hl, hh, bl, bh in zip(h_lo, h_hi, b_lo, b_hi):
+            rows = h_order[hl:hh]
+            rows = rows[~hit[rows]]
+            if len(rows) == 0:
+                continue
+            d = np.bitwise_count(hashes[rows, None] ^ blocked[b_order[bl:bh]][None, :])
+            hit[rows[(d <= max_dist).any(axis=1)]] = True
+    return hit

@@ -4,6 +4,9 @@ Runs on the shard indices only (``shard_*.index.npz``: size, dHash, SHA-1 per im
 minutes and a few GB of RAM for tens of millions of images. For every source directory listed in ``sources.yaml``
 (in order; an image seen earlier in the order wins):
 
+0. benchmark decontamination (``--blocklist``): the builders already drop blocklisted images, but the
+   blocklist grows when more benchmarks are built, so it is re-applied here to every image (exact
+   SHA-1, dHash within ``--near_dup_bits``): a grown blocklist needs this step again, not a rebuild;
 1. exact duplicates: identical SHA-1 of the stored bytes, within and across sources;
 2. perceptual duplicates: identical 64-bit dHash, within and across sources (catches re-encodes,
    resizes and re-hosted copies; hashes with < 8 or > 56 set bits are exempt since unrelated
@@ -33,6 +36,7 @@ import numpy as np
 import yaml
 
 from onboard_vlm.data.corpus import KEEP_FILE, SPLITS, assign_split, degenerate_dhash, list_shards, load_index
+from onboard_vlm.data.hashing import near_dup_mask
 
 
 def first_occurrence(values: np.ndarray, eligible: np.ndarray | None = None) -> np.ndarray:
@@ -80,6 +84,8 @@ def main() -> None:
     p.add_argument("--test_fraction", type=float, default=0.002, help="only for the split sizes reported in the card")
     p.add_argument("--split_seed", type=int, default=0)
     p.add_argument("--allow_missing", action="store_true", help="skip sources that were not built (default: error)")
+    p.add_argument("--blocklist", default=None, help="eval_blocklist.json (make_eval_blocklist.py), re-applied to every image")
+    p.add_argument("--near_dup_bits", type=int, default=4, help="dHash Hamming radius of a benchmark duplicate (= the builders')")
     args = p.parse_args()
     t0 = time.time()
     with open(args.sources_yaml) as f:
@@ -87,6 +93,7 @@ def main() -> None:
 
     # ---- gather indices in priority order ---------------------------------------------------
     dirs: list[tuple[dict, str]] = []
+    missing: list[str] = []
     for src in spec["sources"]:
         found = [d for d in expand(args.corpus_root, src["dir"]) if list_shards(d)]
         if not found and src.get("optional"):
@@ -94,7 +101,8 @@ def main() -> None:
             continue
         if not found:
             if args.allow_missing:
-                print(f"[finalize] missing source {src['dir']} (skipped)")
+                print(f"[finalize] missing source {src['dir']} (skipped): PRELIMINARY corpus")
+                missing.append(src["dir"])
                 continue
             raise FileNotFoundError(f"source {src['dir']} has no shards under {args.corpus_root}; build it or pass --allow_missing")
         dirs.extend((src, d) for d in found)
@@ -111,11 +119,30 @@ def main() -> None:
     n_total = len(sha)
     print(f"[finalize] {n_total:,} images in {len(dirs)} source directories")
 
+    # ---- decontamination against the current blocklist ------------------------------------------
+    blocked = np.zeros(n_total, dtype=bool)
+    blocklist_info = None
+    if args.blocklist:
+        with open(args.blocklist, "rb") as f:
+            raw = f.read()
+        bl = json.loads(raw)
+        block_sha = np.array([bytes.fromhex(h) for h in bl.get("sha1", [])], dtype="S20")
+        block_dh = np.array([int(h, 16) for h in bl.get("dhash", [])], dtype=np.uint64)
+        block_dh = block_dh[~degenerate_dhash(block_dh)]
+        blocked = np.isin(sha, block_sha)
+        ok = ~degenerate_dhash(dh)
+        blocked[ok] |= near_dup_mask(dh[ok], block_dh, args.near_dup_bits)
+        blocklist_info = {"path": os.path.abspath(args.blocklist), "sha256": hashlib.sha256(raw).hexdigest(),
+                          "benchmarks": bl.get("benchmarks"), "eval_sets": bl.get("eval_sets"),
+                          "near_dup_bits": args.near_dup_bits, "removed": int(blocked.sum())}
+        print(f"[finalize] blocklist ({len(block_sha):,} SHA-1, {len(block_dh):,} dHash; benchmarks {bl.get('benchmarks')}): "
+              f"{int(blocked.sum()):,} corpus images removed", flush=True)
+
     # ---- global de-duplication ---------------------------------------------------------------
     keep_sha = first_occurrence(sha)
     dh_ok = keep_sha & ~degenerate_dhash(dh)
     keep_dh = first_occurrence(dh, eligible=dh_ok)
-    keep = keep_sha & keep_dh
+    keep = keep_sha & keep_dh & ~blocked
     win_sha = winners(sha, np.ones(n_total, dtype=bool), own)
     win_dh = winners(dh, dh_ok, own)
     codes = assign_split(dh, sha, args.val_fraction, args.test_fraction, args.split_seed)
@@ -133,7 +160,7 @@ def main() -> None:
         entry = {
             "source": src["dir"], "directory": os.path.relpath(d, args.corpus_root), "group": src.get("group"),
             "name": src.get("name"), "license": src.get("license"), "url": src.get("url"),
-            "built": int(m.sum()), "kept": int((keep & m).sum()),
+            "built": int(m.sum()), "kept": int((keep & m).sum()), "benchmark_dup_finalize": int((blocked & m).sum()),
             "dup_exact_within": int((rm_sha & (win_sha == k)).sum()), "dup_exact_cross": int((rm_sha & (win_sha != k)).sum()),
             "dup_dhash_within": int((rm_dh & (win_dh == k)).sum()), "dup_dhash_cross": int((rm_dh & (win_dh != k)).sum()),
             "splits": {sp: int((keep & m & (codes == c)).sum()) for c, sp in enumerate(SPLITS)},
@@ -152,6 +179,7 @@ def main() -> None:
         "split_definition": {"val_fraction": args.val_fraction, "test_fraction": args.test_fraction, "split_seed": args.split_seed},
         "splits": {sp: int((keep & (codes == c)).sum()) for c, sp in enumerate(SPLITS)},
         "kept_sha1_digest": digest, "sources": report,
+        "decontamination": blocklist_info, "missing_sources": missing, "preliminary": bool(missing),
     }
     with open(os.path.join(args.corpus_root, "corpus_manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1)
@@ -185,6 +213,12 @@ def write_card(path: str, m: dict) -> None:
         "Build-time filters per source (decode errors, short side, aspect ratio, near-uniform, benchmark duplicates) are in",
         "`corpus_manifest.json` (`sources[*].builder`) and in each source's `dataset.json`.",
     ]
+    d = m.get("decontamination")
+    if d:
+        lines += ["", f"Decontaminated at finalize against `{os.path.basename(d['path'])}` (sha256 `{d['sha256'][:16]}`): "
+                  f"{d['removed']:,} images removed; benchmarks covered: {', '.join(d['benchmarks'] or [])}."]
+    if m.get("missing_sources"):
+        lines += ["", f"**PRELIMINARY corpus**: sources not built yet: {', '.join(m['missing_sources'])}."]
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 

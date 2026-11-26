@@ -170,7 +170,9 @@ resolution.
 * `onboard_vlm/eval/stats.py` and `scripts/aggregate_results.py` compute:
   * a percentile-bootstrap 95% CI (10k resamples) over evaluation items for every score;
   * paired comparisons on the same items (paired bootstrap of the mean difference; exact McNemar for
-    binary outcomes), Holm-corrected across benchmarks;
+    binary outcomes), Holm-corrected across benchmarks. With several training seeds the bootstrap
+    resamples each model's seeds as well as the items (`hierarchical_paired_bootstrap`), so a difference
+    must hold across training runs;
   * retention = student / teacher;
   * seed mean ± std.
 * Per-item scores come from `scored.jsonl` (`run_eval.py`), lmms-eval `--log_samples` files and
@@ -179,7 +181,8 @@ resolution.
   and frame of the eight target benchmarks, every E1 and E2 set, and every lmms-eval E3 image set.
   The E3 images are built from the exact HF repos lmms-eval evaluates (`make_datasets/eval_sets/`).
   It also blocks the Open Images ids behind TextVQA and the Ego4D videos behind EgoSchema /
-  EgoTextVQA-Indoor. Every corpus image is checked against this list before training. Video-MME and
+  EgoTextVQA-Indoor. Every corpus image is checked against this list when its source is built, and again
+  by `corpus_finalize` (so benchmarks added later only need `corpus_finalize`, not a rebuild). Video-MME and
   MVBench videos are not fingerprinted: their sources are not in the corpus.
 * **Leakage guards.**
   * One corpus split definition is used everywhere (training, target generation, E1), and a test

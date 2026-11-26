@@ -31,7 +31,7 @@ import sys
 from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from onboard_vlm.eval.stats import bootstrap_ci, holm, paired_bootstrap, seed_summary
+from onboard_vlm.eval.stats import bootstrap_ci, hierarchical_paired_bootstrap, holm, paired_bootstrap, seed_summary
 
 NON_METRIC = {"doc_id", "doc", "target", "arguments", "resps", "filtered_resps", "doc_hash", "prompt_hash", "target_hash",
               "input", "filter", "metrics", "id", "question_id", "task", "split"}
@@ -96,12 +96,8 @@ def benchmark_table(runs: dict[str, list[dict[str, dict[str, float]]]], referenc
                 continue
             e = {"ci_first_seed": bootstrap_ci(list(per_seed[0].values())), "seeds": seed_summary([sum(v.values()) / len(v) for v in per_seed])}
             if reference and model != reference and reference in runs and any(b in s for s in runs[reference]):
-                ref = next(s[b] for s in runs[reference] if b in s)
-                common = sorted(set(ref) & set(per_seed[0]))
-                if common:
-                    e["vs_reference"] = paired_bootstrap([per_seed[0][i] for i in common], [ref[i] for i in common])
-                    rm = sum(ref[i] for i in common) / len(common)
-                    e["retention"] = (sum(per_seed[0][i] for i in common) / len(common)) / rm if rm else float("nan")
+                refs = [s[b] for s in runs[reference] if b in s]
+                e["vs_reference"], e["retention"] = compare(per_seed, refs)
             table.setdefault(b, {})[model] = e
     for model in runs:  # Holm correction across benchmarks, per model
         ps = {b: t[model]["vs_reference"]["p"] for b, t in table.items() if model in t and "vs_reference" in t[model]}
@@ -110,27 +106,47 @@ def benchmark_table(runs: dict[str, list[dict[str, dict[str, float]]]], referenc
     return table
 
 
+def compare(model_seeds: list[dict[str, float]], ref_seeds: list[dict[str, float]]) -> tuple[dict, float]:
+    """Paired test of a model against the reference on the items every seed of both has: a plain paired
+    bootstrap with one seed each, else seeds and items resampled together; and the retention model / reference."""
+    common = sorted(set.intersection(*(set(s) for s in model_seeds + ref_seeds)))
+    if not common:
+        return {}, float("nan")
+    A = [[s[i] for i in common] for s in model_seeds]
+    B = [[s[i] for i in common] for s in ref_seeds]
+    if len(A) == 1 and len(B) == 1:
+        test = {**paired_bootstrap(A[0], B[0]), "method": "paired bootstrap over items"}
+    else:
+        test = {**hierarchical_paired_bootstrap(A, B), "method": f"paired bootstrap over items and seeds ({len(A)} vs {len(B)})"}
+    rm = sum(map(sum, B)) / (len(B) * len(common))
+    return test, (sum(map(sum, A)) / (len(A) * len(common))) / rm if rm else float("nan")
+
+
 def fidelity_table(fid: dict[str, list[str]], reference: str | None) -> dict:
+    """E1 per set@budget: the summary of the first seed, and a paired comparison with ``reference`` over all seeds."""
     out: dict = {}
-    per_image: dict[str, dict[tuple, float]] = {}
+    per_image: dict[str, list[dict[tuple, float]]] = {}
     for model, dirs in fid.items():
         with open(os.path.join(dirs[0], "summary.json")) as f:
             summ = json.load(f)
         for e in summ["sets"]:
             out.setdefault(f"{e['set']}@{e['budget']}", {})[model] = {k: e.get(k) for k in ("lm_cos", "lm_rel_err", "vis_cos", "cka", "num_images")}
-        pi = os.path.join(dirs[0], "per_image.jsonl")
-        if os.path.isfile(pi):
-            with open(pi) as f:
-                per_image[model] = {(r["set"], r["budget"], r["sample_id"]): r.get("lm_cos") for r in map(json.loads, f)}
+        for d in dirs:
+            pi = os.path.join(d, "per_image.jsonl")
+            if os.path.isfile(pi):
+                with open(pi) as f:
+                    per_image.setdefault(model, []).append({(r["set"], r["budget"], r["sample_id"]): r.get("lm_cos") for r in map(json.loads, f)})
     if reference in per_image:
-        for model, vals in per_image.items():
+        for model, seeds in per_image.items():
             if model == reference:
                 continue
             for key in out:
                 name, budget = key.rsplit("@", 1)
-                ids = [k for k in vals if k[0] == name and str(k[1]) == budget and k in per_image[reference]]
-                if ids and model in out[key]:
-                    out[key][model]["vs_reference"] = paired_bootstrap([vals[k] for k in ids], [per_image[reference][k] for k in ids])
+                sel = lambda d, name=name, budget=budget: {k: v for k, v in d.items() if k[0] == name and str(k[1]) == budget}  # noqa: E731
+                if model in out[key]:
+                    test, _ = compare([sel(s) for s in seeds], [sel(s) for s in per_image[reference]])
+                    if test:
+                        out[key][model]["vs_reference"] = test
     return out
 
 

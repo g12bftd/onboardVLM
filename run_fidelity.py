@@ -26,6 +26,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
+from onboard_vlm.data.availability import available
 from onboard_vlm.data.collator import DualViewCollator
 from onboard_vlm.data.data_module import ShapedDataset, dataset_sizes
 from onboard_vlm.data.samplers import ExactShapeBatchSampler
@@ -75,10 +76,18 @@ def main(cfg: DictConfig) -> None:
     tokens_by_key: dict[tuple[str, int], list[np.ndarray]] = defaultdict(list)
     excluded: dict[str, dict[int, int]] = {}
     collate = DualViewCollator(train=False)
+    skipped: list[dict] = []
     with open(os.path.join(cfg.output_dir, "per_image.jsonl"), "w") as fout:
         for es in to_plain(cfg.sets):
             with stage(f"Set {es['name']} ({es.get('group', '-')})", log):
                 dcfg = {**to_plain(cfg.get("dataset_defaults") or {}).get(es["dataset"]["name"], {}), **es["dataset"]}
+                if cfg.get("allow_missing_sources"):
+                    dcfg, note = available(dcfg)
+                    if note:
+                        log.warning("     PRELIMINARY: %s: %s%s", es["name"], note, " -> skipped" if dcfg is None else "")
+                        skipped.append({"set": es["name"], "note": note, "skipped": dcfg is None})
+                    if dcfg is None:
+                        continue
                 ds = build_dataset(dcfg)
                 sizes = dataset_sizes(ds)
                 log.info("     %s images", f"{len(ds):,}")
@@ -102,6 +111,8 @@ def main(cfg: DictConfig) -> None:
                     n = len(rows_by_key[(es["name"], b)])
                     m = np.mean([r.get("lm_cos", np.nan) for r in rows_by_key[(es["name"], b)]]) if n else float("nan")
                     log.info("     budget %4d: %s images (%d out of domain) | lm_cos %.4f", b, f"{n:,}", excluded[es["name"]][b], m)
+    with open(os.path.join(cfg.output_dir, "skipped_sets.json"), "w") as f:
+        json.dump(skipped, f, indent=1)
     with stage("Bootstrap summaries", log):
         summary = summarise(rows_by_key, tokens_by_key, excluded, cfg)
         with open(os.path.join(cfg.output_dir, "summary.json"), "w") as f:

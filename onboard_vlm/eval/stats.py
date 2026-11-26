@@ -3,7 +3,9 @@
 Every number reported for a model is a mean over evaluation items with a 95% percentile-bootstrap
 CI. Comparisons between two models on the *same* items (student vs teacher, method A vs B) use paired
 tests: a paired bootstrap of the mean difference (any per-item score) and the exact McNemar test
-(binary correctness). Across training seeds we report mean +- standard deviation.
+(binary correctness). When a model has several training seeds, the comparison resamples seeds as well
+as items (:func:`hierarchical_paired_bootstrap`), so a difference must hold across training runs, not
+only across evaluation items. Across seeds we also report mean +- standard deviation.
 """
 
 from __future__ import annotations
@@ -47,6 +49,42 @@ def paired_bootstrap(a: Sequence[float], b: Sequence[float], n_boot: int = 10_00
     centered = bd - d.mean()  # bootstrap distribution under H0: mean difference = 0
     p = float(min(1.0, (np.abs(centered) >= abs(d.mean())).mean() + 1.0 / n_boot))
     return {"diff": float(d.mean()), "lo": float(np.quantile(bd, alpha / 2)), "hi": float(np.quantile(bd, 1 - alpha / 2)), "p": p, "n": int(len(d))}
+
+
+def hierarchical_paired_bootstrap(
+    a: Sequence[Sequence[float]], b: Sequence[Sequence[float]], n_boot: int = 10_000, alpha: float = 0.05, seed: int = 0, chunk: int = 250
+) -> dict[str, float]:
+    """Paired comparison of two *trained* models with several seeds each, on the same items.
+
+    ``a`` is ``seeds_a x items`` and ``b`` is ``seeds_b x items`` (same items, same order; one row for a
+    deterministic model such as the teacher). Every replicate resamples the items (shared by both
+    models, so the comparison stays paired) and, independently, the seeds of each model, so the CI
+    covers both the evaluation-set sampling and the training-seed variance. With one seed per model
+    it reduces to :func:`paired_bootstrap`. Items with a NaN in any row are dropped.
+    """
+    A, B = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    if A.ndim != 2 or B.ndim != 2 or A.shape[1] != B.shape[1]:
+        raise ValueError(f"need seeds x items arrays over the same items, got {A.shape} and {B.shape}")
+    ok = ~(np.isnan(A).any(0) | np.isnan(B).any(0))
+    A, B = A[:, ok], B[:, ok]
+    n = A.shape[1]
+    if n == 0:
+        return {"diff": float("nan"), "lo": float("nan"), "hi": float("nan"), "p": float("nan"), "n": 0, "seeds": [len(A), len(B)]}
+    rng = np.random.default_rng(seed)
+    obs = A.mean() - B.mean()
+    bd = np.empty(n_boot, dtype=np.float64)
+    for s0 in range(0, n_boot, chunk):
+        k = min(chunk, n_boot - s0)
+        w = np.stack([np.bincount(rng.integers(0, n, n), minlength=n) for _ in range(k)]).astype(np.float64) / n  # item weights
+        ra, rb = A @ w.T, B @ w.T                         # per-seed resampled means: (seeds, k)
+        sa = rng.integers(0, len(A), size=(k, len(A)))    # resampled seeds per replicate
+        sb = rng.integers(0, len(B), size=(k, len(B)))
+        cols = np.arange(k)
+        bd[s0 : s0 + k] = ra[sa, cols[:, None]].mean(1) - rb[sb, cols[:, None]].mean(1)
+    centered = bd - obs
+    p = float(min(1.0, (np.abs(centered) >= abs(obs)).mean() + 1.0 / n_boot))
+    return {"diff": float(obs), "lo": float(np.quantile(bd, alpha / 2)), "hi": float(np.quantile(bd, 1 - alpha / 2)), "p": p, "n": int(n),
+            "seeds": [int(len(A)), int(len(B))]}
 
 
 def mcnemar(a_correct: Sequence[bool], b_correct: Sequence[bool]) -> dict[str, float]:

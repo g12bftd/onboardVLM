@@ -37,6 +37,9 @@ corpus_split: {val_fraction: 0.002, test_fraction: 0.002, split_seed: 0}
 # Object-centric corpus component: imagenet1k (default; the same download also serves the E2 probes) or
 # imagenet21k (optional, 1.2 TB). generate_targets.yaml and fidelity.yaml repeat it (checked by a test).
 objects_source: imagenet1k
+# Preliminary runs only (e.g. while a licence is pending): leave out corpus sources / benchmark splits that are
+# not built yet, logged and renormalised (onboard_vlm/data/availability.py). Paper runs keep this false.
+allow_missing_sources: false
 # Intermediate-layer distillation: {student_layer: teacher_layer} (empty = final tokens only).
 layer_map: {}
 
@@ -77,6 +80,14 @@ callbacks:
 io:
   base_output_path: ${output_root}/logs
   version: ${run_id}
+
+# One run directory per run_id (not a timestamp): every DDP rank launched by srun resolves the same one.
+hydra:
+  run:
+    dir: ${output_root}/hydra/distill/${run_id}
+  sweep:
+    dir: ${output_root}/hydra/distill_multirun
+    subdir: ${run_id}
 
 defaults:
   - _self_

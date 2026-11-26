@@ -139,6 +139,31 @@ def test_finalize_dedups_across_sources(tmp_path):
     assert not any(s.startswith("b/copy") or s == "b/resized.jpg" for v in ids.values() for s in v)
 
 
+def test_finalize_reapplies_a_grown_blocklist_and_allows_missing_sources(tmp_path):
+    """Benchmarks built after the sources (a grown blocklist) need only finalize again: exact SHA-1 and
+    near-duplicate dHash matches are removed there. Missing sources make a corpus marked preliminary."""
+    from onboard_vlm.data.hashing import sha1_bytes
+
+    corpus, spec = _two_source_corpus(tmp_path)
+    spec.write_text(spec.read_text() + "  - {dir: c, group: g, license: z}\n")  # never built
+    with pytest.raises(AssertionError, match="allow_missing"):  # a missing source is an error unless allowed
+        _run("finalize_corpus.py", "--corpus_root", str(corpus), "--sources_yaml", str(spec))
+    raw_a = tmp_path / "raw" / "a"
+    exact = sha1_bytes((raw_a / "07.jpg").read_bytes())  # stored unchanged (no downscale): same bytes
+    near = dhash(_structured(20).resize((330, 250))) ^ 0b101  # a re-encoded, resized frame of a/10.jpg
+    bl = tmp_path / "bl.json"
+    json.dump({"sha1": [exact], "dhash": [f"{near:016x}"], "benchmarks": ["new_benchmark"], "eval_sets": []}, open(bl, "w"))
+    _run("finalize_corpus.py", "--corpus_root", str(corpus), "--sources_yaml", str(spec), "--blocklist", str(bl), "--allow_missing")
+    m = json.load(open(corpus / "corpus_manifest.json"))
+    assert m["preliminary"] and m["missing_sources"] == ["c"]
+    assert m["decontamination"]["removed"] == 2 and m["decontamination"]["benchmarks"] == ["new_benchmark"]
+    assert m["sources"][0]["benchmark_dup_finalize"] == 2 and m["total_kept"] == 48
+    kept = ImageCorpusDataset(str(corpus / "a"), split="all", require_finalized=True)
+    ids = {kept.record(i).sample_id for i in range(len(kept))}
+    assert "a/07.jpg" not in ids and "a/10.jpg" not in ids and len(ids) == 28
+    assert "PRELIMINARY" in (corpus / "CORPUS_CARD.md").read_text()
+
+
 def test_loader_splits_are_content_hashed(tmp_path):
     """Splits depend only on (image, fractions, seed): not on which shards / sources are loaded, and
     duplicates (same dHash) always land in the same split."""

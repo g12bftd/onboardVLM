@@ -17,14 +17,15 @@
 #                          probe data: nyuv2
 #   benchmarks_download  download:<every benchmark>
 #   benchmarks_extract   unpack the EgoBlind video archives (Google Drive) and check that no video is missing
-#   benchmarks_lmdb      $RAW_ROOT/<benchmark> -> $LMDB_ROOT/<benchmark>/<split>.lmdb
+#   benchmarks_lmdb      $RAW_ROOT/<benchmark> -> $LMDB_ROOT/<benchmark>/<split>.lmdb (SKIP_BENCHMARKS: leave some out)
 #   eval_sets            E1 / E3 image sets -> raw $RAW_ROOT/eval_sets/<set>, processed $EVAL_ROOT/<set>
 #   probe_data           download:imagenet1k + download:nyuv2, NYUv2 -> $EVAL_ROOT/nyuv2
 #   corpus_download      download:<every corpus image source> (objects source = $OBJECTS_SOURCE, default imagenet1k)
-#   blocklist            fingerprints of every evaluation image -> $CORPUS_ROOT/eval_blocklist.json
+#   blocklist            fingerprints of every evaluation image -> $CORPUS_ROOT/eval_blocklist.json (benchmarks built so far)
 #   ego4d_download       download:ego4d (needs the blocklist: benchmark source videos are never downloaded)
 #   corpus_build         every corpus source -> $CORPUS_ROOT/<source>   (one source: corpus:<name>)
-#   corpus_finalize      global de-duplication, dataset.json, manifest, CORPUS_CARD.md
+#   corpus_finalize      decontamination against the current blocklist, global de-duplication, dataset.json,
+#                        manifest, CORPUS_CARD.md (ALLOW_MISSING=1: sources not built yet are left out)
 #   check                summary of everything that is in place (scripts/check_data.py)
 #
 # Credentials needed first (docs/setup_cscs.md): `hf auth login` (+ accepted terms of timm/imagenet-1k-wds),
@@ -110,14 +111,9 @@ step_benchmarks_extract() {
     --ids "$RAW_ROOT/egoblind/test.csv" "$RAW_ROOT/egoblind/train.csv" --required "$RAW_ROOT/egoblind/test.csv" --max_missing 0.01
 }
 
-step_benchmarks_lmdb() {
-  if [ -f "$LMDB_ROOT/.done" ]; then log "benchmark LMDBs already built (rm $LMDB_ROOT/.done to rebuild)"; return; fi
-  # EgoTextVQA-Indoor videos are EgoSchema clips: all of them must be in the EgoSchema download
-  python -I "$HERE/download/verify_videos.py" --name egotextvqa_indoor --video_dir "$RAW_ROOT/egoschema/videos" \
-    --ids "$RAW_ROOT/egotextvqa/egotextvqa_indoor_annotation.csv" --key video_id
-  rm -rf "${LMDB_ROOT:?}"/*  # LMDB writers refuse duplicate keys: always build into an empty directory
+step_benchmarks_lmdb() {  # each benchmark on its own (build_all_lmdb.sh); SKIP_BENCHMARKS leaves some out
   bash "$HERE/build_all_lmdb.sh"
-  touch "$LMDB_ROOT/.done"
+  [ -z "${SKIP_BENCHMARKS:-}" ] || INCOMPLETE=1   # re-run later, without the skips, to add them
 }
 
 step_eval_sets() { python -u "$HERE/eval_sets/build_eval_sets.py" --raw_root "$RAW_ROOT/eval_sets" --eval_root "$EVAL_ROOT" --workers "${EVAL_WORKERS:-8}"; }
@@ -131,10 +127,16 @@ step_probe_data() {
 
 step_corpus_download() { local c; for c in "${CORPUS_IMAGE_SOURCES[@]}"; do log "download:$c"; download "$c"; done; }
 
-step_blocklist() { bash "$HERE/build_corpus.sh" blocklist; }
+step_blocklist() {  # from the benchmarks built so far; rebuilt automatically when more are built
+  bash "$HERE/build_corpus.sh" blocklist
+  [ -z "${SKIP_BENCHMARKS:-}" ] || INCOMPLETE=1
+}
 step_ego4d_download() { download ego4d; }
 step_corpus_build() { bash "$HERE/build_corpus.sh" text_rich openimages sa1b "$OBJECTS_SOURCE" cc12m ego4d epic_kitchens; }
-step_corpus_finalize() { bash "$HERE/build_corpus.sh" finalize; }
+step_corpus_finalize() {  # ALLOW_MISSING=1: a preliminary corpus without the sources not built yet
+  bash "$HERE/build_corpus.sh" finalize
+  [ -z "${ALLOW_MISSING:-}${SKIP_BENCHMARKS:-}" ] || INCOMPLETE=1   # partial: finalize again once complete
+}
 step_check() { python "$REPO/scripts/check_data.py"; }
 
 STEPS=("$@")
