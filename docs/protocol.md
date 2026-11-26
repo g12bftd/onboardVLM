@@ -192,6 +192,21 @@ resolution.
   * Logit-distillation targets are generated only from corpus train images.
   * Probes use official train/eval splits.
 
+## 7b. What every run records
+
+| file (per run) | contents |
+|---|---|
+| `logs/onboard_vlm/<run_id>/metrics.csv` (+ TensorBoard) | every training loss term per step (mean over GPUs); `diag/*`: gradient norm before clipping (student, heads) and clip rate, parameter norm, update ratio, step time, images / tokens per second, peak memory; learning rate per parameter group; `progress/images_seen`, `soft_tokens_seen`; validation at step 0 and every `val_check_interval`: all fidelity metrics overall, per group, per budget and per group x budget |
+| `.../train_summary.json` | images and soft tokens seen (per budget), optimizer steps, wall clock, device-hours, the selected checkpoint and its score |
+| `.../provenance.json`, `requirements.freeze.txt`, `uncommitted.patch` | git commit / branch / dirty diff, command, host, SLURM job, package and CUDA versions, GPUs, seeds, teacher revision, corpus digest and `preliminary` flag, blocklist hash, benchmarks built (also next to every E1 / E2 / E3 output and every export) |
+| `hydra/distill/<run_id>/.hydra/` | the resolved config and overrides |
+| `checkpoints/<run_id>/`, `students/<run_id>/` | top-3 + last checkpoints; the deployable export |
+| `trajectories/<run_id>/step_*/` | exports at fixed fractions of training and their E1 / E2 / E3 (`scripts/trajectory_eval.py`) |
+| E1 `per_image.jsonl`, E3 `scored.jsonl`, lmms-eval `--log_samples` | per-item scores, for paired tests and bootstrap CIs |
+
+Paper outputs: `scripts/plot_study.py` (figures at the venue's text width, TrueType fonts, a CSV table per
+figure) and `scripts/aggregate_results.py` (`tables.tex` with booktabs, `tables.md`, `tables.json`).
+
 ## 8. Ablations (one config or CLI override each)
 
 | question | how |

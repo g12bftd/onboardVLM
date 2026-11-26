@@ -85,6 +85,9 @@ def train(cfg: DictConfig) -> None:
     if trainer.is_global_zero:
         with stage(f"Exporting deployable student to {cfg.export_dir}", log):
             task.export(cfg.export_dir)
+            from onboard_vlm.utils.provenance import write_provenance
+
+            write_provenance(cfg.export_dir, cfg)
 
 
 def _has_best(trainer: pl.Trainer) -> bool:
@@ -97,6 +100,10 @@ def main(cfg: DictConfig) -> None:
     run_dir = HydraConfig.get().runtime.output_dir
     log = setup_logging(run_dir)
     log.info("===> Resolved configuration (also saved under %s/.hydra/)\n%s", run_dir, OmegaConf.to_yaml(cfg, resolve=True))
+    from onboard_vlm.utils.provenance import write_provenance
+
+    # next to metrics.csv / train_summary.json: git commit, versions, hardware, seeds, data fingerprints
+    write_provenance(os.path.join(cfg.io.base_output_path, cfg.tag, str(cfg.io.version)), cfg)
     train(cfg)
 
 

@@ -25,6 +25,7 @@ from onboard_vlm.eval import probe_data, probes
 from onboard_vlm.eval.stats import bootstrap_ci
 from onboard_vlm.utils.config import to_plain
 from onboard_vlm.utils.logging import get_logger, setup_logging, stage
+from onboard_vlm.utils.provenance import write_provenance
 
 log = get_logger("onboard_vlm.probe")
 
@@ -109,6 +110,7 @@ def main(cfg: DictConfig) -> None:
             {"imagenet": run_imagenet, "ade20k": run_ade20k, "nyuv2": run_nyuv2}[task](enc, cfg, out)
             log.info("     %s", json.dumps(out[task], default=str)[:400])
     os.makedirs(cfg.output_dir, exist_ok=True)
+    write_provenance(cfg.output_dir, cfg)
     with open(os.path.join(cfg.output_dir, "results.json"), "w") as f:
         json.dump(out, f, indent=1, default=str)
     log.info("<=== E2 written to %s", cfg.output_dir)

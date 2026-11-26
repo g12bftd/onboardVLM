@@ -177,6 +177,7 @@ def test_shrink_run_records_learning_curves(tmp_path):
     traj = tmp_path / "traj"
     _run("run_distill.py", "+experiment=debug/dryrun_embedding", "student=gemma4_shrink", "student.num_hidden_layers=2",
          "student.hidden_size=24", "layer_map=auto", "validate_at_start=true", "trainer.max_steps=4", f"output_root={tmp_path}",
+         "callbacks.diagnostics.every_n_steps=2", "+trainer.gradient_clip_val=1.0",
          f"+callbacks.trajectory={{_target_: onboard_vlm.utils.callbacks.TrajectoryCallback, dirpath: {traj}, fractions: [0, 0.5, 1]}}")
     steps = sorted(p.name for p in traj.iterdir())
     assert steps == ["step_00000000", "step_00000002", "step_00000004"]
@@ -186,6 +187,11 @@ def test_shrink_run_records_learning_curves(tmp_path):
     val0 = [r for r in rows if r["step"] == "0" and r.get("val/fid_lm_mse")]
     assert val0 and float(val0[0]["val/fid_lm_cos"]) < 1.0  # step 0: before any update
     assert any(r.get("progress/images_seen") for r in rows)
+    diag = [r for r in rows if r.get("diag/grad_norm")]
+    assert diag and all(r.get("diag/grad_clipped") in ("0.0", "1.0") for r in diag) and any(r.get("diag/update_ratio") for r in diag)
+    run_dir = next(tmp_path.glob("logs/*/*/metrics.csv")).parent
+    prov = json.load(open(run_dir / "provenance.json"))
+    assert prov["seeds"] == {"seed": 0, "init_seed": 0, "data_seed": 0} and prov["versions"]["torch"] and (run_dir / "requirements.freeze.txt").exists()
     # every export evaluated (E1 here), skipping finished ones on a re-run
     ev = ["scripts/trajectory_eval.py", "--run_dir", str(traj), "--evals", "e1", "--teacher_config", "gemma4_tiny", "--budgets", "70",
           "--extra", "device=cpu", "dtype=float32", "num_workers=0", "input_domain={budgets: [70, 140], max_aspect: 4.0}", "tokens_per_batch=280",
@@ -308,6 +314,10 @@ def test_aggregate_results(tmp_path):
          "--eval", f"stu={tmp_path}/stu0,{tmp_path}/stu1")
     t = json.load(open(tmp_path / "t" / "tables.json"))["benchmarks"]["vizwiz_vqa"]
     assert t["stu"]["seeds"]["n_seeds"] == 2 and "vs_reference" in t["stu"] and "p_holm" in t["stu"]["vs_reference"]
+    tex = (tmp_path / "t" / "tables.tex").read_text()
+    assert "\\toprule" in tex and "vizwiz\\_vqa" in tex and "$\\pm$" in tex and "\\textbf{" in tex
+    rows = [ln for ln in tex.splitlines() if ln.endswith("\\\\") and not ln.startswith("model")]
+    assert rows[0].startswith("ref &")  # the reference first
 
 
 def test_blocklist_reads_eval_set_fingerprints(tmp_path):
@@ -340,11 +350,13 @@ def test_plot_study_on_synthetic_runs(tmp_path):
             log_dir = tmp_path / "logs" / "onboard_vlm" / rid
             log_dir.mkdir(parents=True)
             with open(log_dir / "metrics.csv", "w", newline="") as f:
-                w = _csv.DictWriter(f, fieldnames=["step", "progress/images_seen", "val/fid_lm_cos", "val/b70/fid_lm_cos"])
+                w = _csv.DictWriter(f, fieldnames=["step", "progress/images_seen", "val/fid_lm_cos", "val/b70/fid_lm_cos", "train/total",
+                                                   "diag/grad_norm", "lr-AdamW/pg1"])
                 w.writeheader()
                 for step in range(0, 500, 100):
                     v = 0.9 + L / 100 - 0.3 * np.exp(-step / 100) + 0.001 * s
-                    w.writerow({"step": step, "progress/images_seen": step * 8, "val/fid_lm_cos": v, "val/b70/fid_lm_cos": v})
+                    w.writerow({"step": step, "progress/images_seen": step * 8, "val/fid_lm_cos": v, "val/b70/fid_lm_cos": v,
+                                "train/total": 1 - v, "diag/grad_norm": 2 - v, "lr-AdamW/pg1": 1e-3})
             for step in (0, 200, 400):
                 d = tmp_path / "trajectories" / rid / f"step_{step:08d}"
                 (d / "eval" / "e3" / "cvbench").mkdir(parents=True)
@@ -361,7 +373,7 @@ def test_plot_study_on_synthetic_runs(tmp_path):
     log = _run("scripts/plot_study.py", "--root", str(tmp_path), "--out", str(out), "--runs", "shrink_L*_D768_*",
                "--label", "{L} layers", "--order", "L", "--teacher_dir", str(tmp_path / "teacher"))
     assert "2 series" in log
-    for name in ("curves_fidelity", "curves_budgets", "trajectory_e1", "trajectory_e3", "final_vs_params", "fidelity_vs_downstream"):
+    for name in ("curves_fidelity", "curves_budgets", "trajectory_e1", "trajectory_e3", "final_vs_params", "fidelity_vs_downstream", "curves_training"):
         assert (out / f"{name}.png").exists() and (out / f"{name}.csv").exists(), name
     rows = list(_csv.DictReader(open(out / "curves_fidelity.csv")))
     assert {r["series"] for r in rows} == {"4 layers", "8 layers"} and all(r["n_seeds"] == "2" for r in rows)

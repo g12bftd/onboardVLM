@@ -116,6 +116,11 @@ class PipelineLoggingCallback(pl.Callback):
                 "images_seen": self.totals["images"], "soft_tokens_seen": self.totals["soft_tokens"],
                 "images_by_budget": dict(self.totals["images_by_budget"]), "tokens_by_budget": dict(self.totals["tokens_by_budget"]),
             }
+            cb = getattr(trainer, "checkpoint_callback", None)
+            if cb is not None and getattr(cb, "best_model_path", ""):  # the checkpoint model selection chose, and on what
+                score = cb.best_model_score
+                summary["selection"] = {"metric": cb.monitor, "mode": cb.mode, "best_score": float(score) if score is not None else None,
+                                        "best_checkpoint": cb.best_model_path}
             path = os.path.join(trainer.log_dir or trainer.default_root_dir, "train_summary.json")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
@@ -194,3 +199,78 @@ class TrajectoryCallback(pl.Callback):
     def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if not trainer.sanity_checking:
             self._log(trainer)
+
+
+class DiagnosticsCallback(pl.Callback):
+    """Optimisation diagnostics on the loggers (``diag/*``), every ``every_n_steps`` optimizer steps:
+
+    * ``grad_norm`` (L2, before clipping) of the student and of the training-only heads, and ``grad_clipped``
+      (1 when the norm exceeds ``trainer.gradient_clip_val``): how often clipping changes the update;
+    * ``param_norm`` of the student, and ``update_ratio`` = ||theta_t - theta_{t-n}|| / ||theta_{t-n}||: the
+      effective step size, comparable across model sizes trained with one learning rate;
+    * ``step_time_s``, ``images_per_s``, ``soft_tokens_per_s`` and ``max_mem_gb`` (peak device memory).
+    """
+
+    def __init__(self, every_n_steps: int = 50, track_updates: bool = True):
+        super().__init__()
+        self.every_n_steps, self.track_updates = max(1, int(every_n_steps)), track_updates
+        self._snapshot: list | None = None
+        self._t = 0.0
+        self._images = self._tokens = 0
+        self._pending: dict[str, float] = {}
+
+    @staticmethod
+    def _norm(params) -> float:
+        import torch
+
+        sq = [p.grad.detach().float().pow(2).sum() for p in params if p.grad is not None]
+        return float(torch.stack(sq).sum().sqrt()) if sq else 0.0
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        self._t = time.perf_counter()
+
+    def on_before_optimizer_step(self, trainer: pl.Trainer, pl_module: pl.LightningModule, optimizer: Any) -> None:
+        step = trainer.global_step + 1  # the step this update produces
+        if step % self.every_n_steps:
+            return
+        student = getattr(pl_module, "student", None)
+        s_params = [p for p in (student.parameters() if student is not None else []) if p.requires_grad]
+        ids = {id(p) for p in s_params}
+        other = [p for p in pl_module.parameters() if p.requires_grad and id(p) not in ids]
+        g = self._norm(s_params + other)
+        clip = trainer.gradient_clip_val
+        self._pending = {"diag/grad_norm": g, "diag/grad_norm_student": self._norm(s_params), "diag/grad_norm_heads": self._norm(other)}
+        if clip:
+            self._pending["diag/grad_clipped"] = float(g > float(clip))
+
+    def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs: Any, batch: Any, batch_idx: int) -> None:
+        import torch
+
+        w = trainer.world_size
+        self._images += len(batch) * w
+        self._tokens += sum(getattr(batch, "image_token_lengths", []) or []) * w
+        step = trainer.global_step
+        if step == 0 or step % self.every_n_steps:
+            return
+        now = time.perf_counter()
+        dt = max(now - self._t, 1e-9)
+        out = {**self._pending, "diag/step_time_s": dt / self.every_n_steps, "diag/images_per_s": self._images / dt,
+               "diag/soft_tokens_per_s": self._tokens / dt}
+        if torch.cuda.is_available():
+            out["diag/max_mem_gb"] = torch.cuda.max_memory_allocated() / 2**30
+        student = getattr(pl_module, "student", None)
+        if student is not None:
+            with torch.no_grad():
+                params = [p.detach() for p in student.parameters() if p.requires_grad]
+                pn = torch.stack([p.float().pow(2).sum() for p in params]).sum().sqrt() if params else torch.zeros(())
+                out["diag/param_norm"] = float(pn)
+                if self.track_updates:
+                    if self._snapshot is not None and len(self._snapshot) == len(params):
+                        du = torch.stack([(p.float() - q).pow(2).sum() for p, q in zip(params, self._snapshot)]).sum().sqrt()
+                        dn = torch.stack([q.pow(2).sum() for q in self._snapshot]).sum().sqrt()
+                        out["diag/update_ratio"] = float(du / dn.clamp_min(1e-12))
+                    self._snapshot = [p.float().clone() for p in params]
+        if trainer.is_global_zero:
+            for lg in trainer.loggers:
+                lg.log_metrics(out, step=step)
+        self._t, self._images, self._tokens, self._pending = now, 0, 0, {}

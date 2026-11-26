@@ -86,6 +86,9 @@ def _record_domain(model, cfg: DictConfig, metrics: dict) -> None:
 def main(cfg: DictConfig) -> None:
     setup_logging(HydraConfig.get().runtime.output_dir)
     log.info("===> Evaluation '%s' on %s\n%s", cfg.run_name, cfg.benchmark.name, OmegaConf.to_yaml(cfg, resolve=True))
+    from onboard_vlm.utils.provenance import write_provenance
+
+    write_provenance(cfg.output_dir, cfg)
     with stage("Loading " + ("original Gemma 4 VLM (teacher baseline)" if cfg.student_dir is None else f"VLM with grafted student {cfg.student_dir}"), log):
         model, processor = _load_model(cfg)
     with stage(f"Setting up benchmark {cfg.benchmark.name}", log):

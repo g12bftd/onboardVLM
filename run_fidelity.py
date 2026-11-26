@@ -36,6 +36,7 @@ from onboard_vlm.geometry import InputDomain, check_student_covers
 from onboard_vlm.registry import build_dataset, build_student, build_teacher
 from onboard_vlm.utils.config import to_plain
 from onboard_vlm.utils.logging import describe_module, get_logger, setup_logging, stage
+from onboard_vlm.utils.provenance import write_provenance
 
 log = get_logger("onboard_vlm.fidelity")
 ASPECT_BINS = (("portrait", 0.0, 0.9), ("square", 0.9, 1.1), ("landscape", 1.1, 2.0), ("wide", 2.0, float("inf")))
@@ -72,6 +73,7 @@ def main(cfg: DictConfig) -> None:
         check_student_covers(student, domain)
         log.info("     %s | input domain: %s", describe_module(student), domain.describe())
     os.makedirs(cfg.output_dir, exist_ok=True)
+    write_provenance(cfg.output_dir, cfg)
     rows_by_key: dict[tuple[str, int], list[dict]] = defaultdict(list)
     tokens_by_key: dict[tuple[str, int], list[np.ndarray]] = defaultdict(list)
     excluded: dict[str, dict[int, int]] = {}

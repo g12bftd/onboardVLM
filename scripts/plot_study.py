@@ -9,6 +9,8 @@ Reads, for every run matched by ``--runs`` (experiment names; all their seeds ar
 
 Writes PNG + PDF + CSV (the plotted values, as a table) per figure into ``--out``:
 
+* ``curves_training``   training loss, gradient norm, clip rate, update ratio, learning rate, throughput (EMA-smoothed);
+* ``curves_loss_terms`` every training loss term;
 * ``curves_fidelity``   val LM-space cosine / MSE, vision-space cosine / MSE, CKA, worst-token cosine vs images seen;
 * ``curves_budgets``    val LM-space cosine per token budget;   ``curves_groups``: per corpus group;
 * ``trajectory_e1``     held-out E1 fidelity (fixed subsets) at the checkpoints;
@@ -47,6 +49,11 @@ RAMP = ["#84b9f3", "#519ced", "#257de0", "#1b64be", "#0f4a96"]
 CATEGORICAL = ["#257de0", "#f47230", "#00b894", "#f2a600"]
 HEAT = ["#cce3fd", "#9dc8f7", "#6aabf1", "#338ced", "#2370cd", "#1757ac", "#0e3d7e"]
 TEXT, TEXT2, GRID = "#191919", "#666666", "#e6e6e6"
+# paper sizing: total figure width in inches (NeurIPS text width 5.5; ICML full width 6.75, column 3.25), fonts in pt
+PAPER = {"width": 5.5, "title": 7.5, "label": 7, "tick": 6, "legend": 7, "note": 6}
+TRAIN_PANELS = [("train/total", "training loss (total)"), ("diag/grad_norm", "gradient norm (pre-clip)"),
+                ("diag/grad_clipped", "fraction of steps clipped"), ("diag/update_ratio", "update ratio ||dθ|| / ||θ||"),
+                ("lr", "learning rate"), ("diag/images_per_s", "throughput (images / s)")]
 
 NAME = re.compile(r"shrink_L(?P<L>\d+)_D(?P<D>\d+)_(?P<init>[a-z]+)_(?P<ls>[^-]+)-(?P<ws>.+)$")
 SEED = re.compile(r"_(?P<tag>s\d+(?:_i\d+_d\d+)?)$")
@@ -79,7 +86,7 @@ def load_curves(path: str) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     im = np.array([p[1] for p in prog] or [0], dtype=float)
     out = {}
     for col in rows[0].keys() if rows else []:
-        if not col.startswith("val"):
+        if not col.startswith(("val", "train/", "diag/", "lr-")):
             continue
         seen, pts = set(), []
         for r in rows:  # the first value per step: later rows at the same step are the post-training re-validation
@@ -89,6 +96,9 @@ def load_curves(path: str) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         if pts:
             s = np.array([p[0] for p in pts], dtype=float)
             out[col] = (np.interp(s, st, im), np.array([p[1] for p in pts]))
+    lr = sorted(c for c in out if c.startswith("lr-"))
+    if lr:
+        out["lr"] = out[lr[0]]  # first parameter group (the student)
     return out
 
 
@@ -161,16 +171,16 @@ def params_of(run: Run) -> float | None:
 
 # ----------------------------------------------------------------------------------------------- styling
 def style(ax, title: str, xlabel: str | None = None) -> None:
-    ax.set_title(title, fontsize=9, color=TEXT, loc="left")
+    ax.set_title(title, fontsize=PAPER["title"], color=TEXT, loc="left")
     ax.grid(axis="y", color=GRID, linewidth=0.6)
     ax.set_axisbelow(True)
     for s in ("top", "right"):
         ax.spines[s].set_visible(False)
     for s in ("left", "bottom"):
         ax.spines[s].set_color(TEXT2)
-    ax.tick_params(colors=TEXT2, labelsize=7)
+    ax.tick_params(colors=TEXT2, labelsize=PAPER["tick"])
     if xlabel:
-        ax.set_xlabel(xlabel, fontsize=8, color=TEXT2)
+        ax.set_xlabel(xlabel, fontsize=PAPER["label"], color=TEXT2)
 
 
 def series_colors(labels: list[str], ordinal: bool) -> dict[str, str]:
@@ -191,7 +201,7 @@ def legend(fig, colors: dict[str, str], teacher: bool) -> None:
     if teacher:
         handles.append(Line2D([], [], color=TEXT2, lw=1.2, ls="--", label="teacher (original encoder)"))
     if len(handles) >= 2:
-        fig.legend(handles=handles, loc="upper center", ncol=min(len(handles), 6), frameon=False, fontsize=8, labelcolor=TEXT)
+        fig.legend(handles=handles, loc="upper center", ncol=min(len(handles), 6), frameon=False, fontsize=PAPER["legend"], labelcolor=TEXT)
 
 
 # ----------------------------------------------------------------------------------------------- figures
@@ -225,7 +235,7 @@ def panel_figure(path: str, panels: list[tuple[str, str]], groups, keys, colors,
     n = len(present)
     cols = min(3, n)
     rows = math.ceil(n / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(3.4 * cols, 2.5 * rows + 0.5), squeeze=False)
+    fig, axes = plt.subplots(rows, cols, figsize=(PAPER["width"], PAPER["width"] / cols * 0.72 * rows + 0.45), squeeze=False)
     table = []
     for ax, (key, title) in zip(axes.flat, present):
         ends: list[tuple[str, float, float]] = []
@@ -236,7 +246,9 @@ def panel_figure(path: str, panels: list[tuple[str, str]], groups, keys, colors,
             for x, y in seeds:
                 ax.plot(x / 1e6, y, color=colors[lab], lw=0.8, alpha=0.35)
             mx, my = mean_curve(seeds)
-            ax.plot(mx / 1e6, my, color=colors[lab], lw=2, marker="o", ms=3.5, markeredgecolor="white", markeredgewidth=0.6)
+            dense = len(mx) > 12  # validation / per-step curves: a line; checkpoint curves keep their markers
+            ax.plot(mx / 1e6, my, color=colors[lab], lw=1.6 if dense else 2, marker=None if dense else "o", ms=3.5,
+                    markeredgecolor="white", markeredgewidth=0.6)
             if len(keys) <= 4 and len(mx):
                 ends.append((lab, mx[-1] / 1e6, my[-1]))
             table += [{"metric": key, "series": lab, "images_seen": float(a), "seed_mean": float(b), "n_seeds": len(seeds)} for a, b in zip(mx, my)]
@@ -256,8 +268,6 @@ def direct_labels(ax, ends: list[tuple[str, float, float]], gap_pt: float = 9.0)
     """Series names at the line ends, pushed apart vertically so they never overlap (text ink, not series colour)."""
     if not ends:
         return
-    x0, x1 = ax.get_xlim()
-    ax.set_xlim(x0, x1 + 0.22 * (x1 - x0))  # room for the labels inside the panel
     fig = ax.figure
     fig.canvas.draw()
     to_px = ax.transData.transform
@@ -267,9 +277,13 @@ def direct_labels(ax, ends: list[tuple[str, float, float]], gap_pt: float = 9.0)
     for py, *_ in pts:
         placed.append(max(py, placed[-1] + gap) if placed else py)
     shift = (placed[-1] - pts[-1][0]) / 2 if len(placed) > 1 else 0.0  # centre the stack on the line ends
+    if any(b[0] - a[0] < 0.35 * gap for a, b in zip(pts, pts[1:])) or max(abs(q - shift - p[0]) for p, q in zip(pts, placed)) > 1.5 * gap:
+        return  # lines end on top of each other: a label far from its line would mislead; the legend identifies them
+    x0, x1 = ax.get_xlim()
+    ax.set_xlim(x0, x1 + 0.22 * (x1 - x0))  # room for the labels inside the panel (vertical positions are unaffected)
     for (py, lab, x, y), q in zip(pts, placed):
         dy_pt = (q - shift - py) * 72 / fig.dpi
-        ax.annotate(lab, (x, y), xytext=(5, dy_pt), textcoords="offset points", fontsize=7, color=TEXT, va="center")
+        ax.annotate(lab, (x, y), xytext=(5, dy_pt), textcoords="offset points", fontsize=PAPER["note"], color=TEXT, va="center")
 
 
 def save(fig, path: str, table: list[dict]) -> None:
@@ -285,6 +299,19 @@ def save(fig, path: str, table: list[dict]) -> None:
             w.writeheader()
             w.writerows(table)
     print(f"[plot_study] {path}.png")
+
+
+def ema(curve, alpha: float):
+    """Exponential moving average of a noisy per-step curve (training losses, gradient norms)."""
+    if curve is None or alpha <= 0:
+        return curve
+    x, y = curve
+    out = np.empty_like(y, dtype=float)
+    acc = None
+    for i, v in enumerate(y):
+        acc = v if acc is None else alpha * acc + (1 - alpha) * v
+        out[i] = acc
+    return x, out
 
 
 def curve_getter(r: Run, key: str):
@@ -312,7 +339,7 @@ def final_vs_params(path: str, groups, keys, colors, metrics: list[tuple[str, st
         return
     cols = min(3, len(present))
     rows = math.ceil(len(present) / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(3.4 * cols, 2.6 * rows + 0.5), squeeze=False)
+    fig, axes = plt.subplots(rows, cols, figsize=(PAPER["width"], PAPER["width"] / cols * 0.75 * rows + 0.45), squeeze=False)
     table = []
     for ax, (key, title) in zip(axes.flat, present):
         xs, ys = [], []
@@ -337,7 +364,7 @@ def final_vs_params(path: str, groups, keys, colors, metrics: list[tuple[str, st
         plain = FuncFormatter(lambda v, _: f"{v:g}")
         ax.xaxis.set_major_formatter(plain)
         ax.xaxis.set_minor_formatter(plain)
-        ax.tick_params(axis="x", which="both", labelsize=7, colors=TEXT2)
+        ax.tick_params(axis="x", which="both", labelsize=PAPER["tick"], colors=TEXT2)
         style(ax, title, "student parameters (M, log)")
     for ax in list(axes.flat)[len(present):]:
         ax.set_visible(False)
@@ -364,21 +391,21 @@ def grid_heatmap(path: str, runs: list[Run], key: str = "val/fid_lm_cos", title:
                 table.append({"layers": L, "width": D, "metric": key, "seed_mean": float(np.mean(vals)), "n_seeds": len(vals)})
     if np.isnan(grid).all():
         return
-    fig, ax = plt.subplots(figsize=(1.0 + 1.1 * len(Ds), 0.8 + 0.7 * len(Ls)))
+    fig, ax = plt.subplots(figsize=(min(PAPER["width"], 1.0 + 0.8 * len(Ds)), 0.7 + 0.45 * len(Ls)))
     im = ax.imshow(grid, cmap=LinearSegmentedColormap.from_list("blue", HEAT), aspect="auto", origin="lower")
     lo, hi = np.nanmin(grid), np.nanmax(grid)
     for i in range(len(Ls)):
         for j in range(len(Ds)):
             if not np.isnan(grid[i, j]):
                 dark = (grid[i, j] - lo) / (hi - lo + 1e-12) > 0.55
-                ax.text(j, i, f"{grid[i, j]:.3f}", ha="center", va="center", fontsize=8, color="white" if dark else TEXT)
+                ax.text(j, i, f"{grid[i, j]:.3f}", ha="center", va="center", fontsize=PAPER["note"], color="white" if dark else TEXT)
     ax.set_xticks(range(len(Ds)), [str(d) for d in Ds])
     ax.set_yticks(range(len(Ls)), [str(L) for L in Ls])
-    ax.set_xlabel("width (hidden size)", fontsize=8, color=TEXT2)
-    ax.set_ylabel("depth (layers)", fontsize=8, color=TEXT2)
-    ax.set_title(f"{title or key}: final value, seed mean", fontsize=9, color=TEXT, loc="left")
-    ax.tick_params(colors=TEXT2, labelsize=7)
-    fig.colorbar(im, ax=ax, shrink=0.8).ax.tick_params(labelsize=7, colors=TEXT2)
+    ax.set_xlabel("width (hidden size)", fontsize=PAPER["label"], color=TEXT2)
+    ax.set_ylabel("depth (layers)", fontsize=PAPER["label"], color=TEXT2)
+    ax.set_title(f"{title or key}: final value, seed mean", fontsize=PAPER["title"], color=TEXT, loc="left")
+    ax.tick_params(colors=TEXT2, labelsize=PAPER["tick"])
+    fig.colorbar(im, ax=ax, shrink=0.8).ax.tick_params(labelsize=PAPER["tick"], colors=TEXT2)
     fig.tight_layout()
     save(fig, path, table)
 
@@ -395,7 +422,7 @@ def fidelity_vs_downstream(path: str, runs: list[Run], fid_key: str, n_boot: int
     present = [(k, t) for k, t in targets if any(fid_key in p and k in p for r in runs for p in r.points)]
     if not present:
         return
-    fig, axes = plt.subplots(1, len(present), figsize=(3.2 * len(present), 2.9), squeeze=False)
+    fig, axes = plt.subplots(1, len(present), figsize=(PAPER["width"], PAPER["width"] / max(len(present), 2) * 0.85 + 0.35), squeeze=False)
     table = []
     rng = np.random.default_rng(0)
     for ax, (key, title) in zip(axes.flat, present):
@@ -427,10 +454,15 @@ def main() -> None:
     p.add_argument("--teacher_dir", default=None, help="trajectory_eval.py --teacher output (reference lines)")
     p.add_argument("--tag", default="onboard_vlm", help="logger name (config `tag`)")
     p.add_argument("--fidelity_budget", type=int, default=280)
+    p.add_argument("--width", type=float, default=5.5, help="figure width in inches (NeurIPS 5.5, ICML 6.75 / column 3.25)")
+    p.add_argument("--smooth", type=float, default=0.9, help="EMA factor for the training-step curves (0 = raw)")
     a = p.parse_args()
     import matplotlib
 
     matplotlib.use("Agg")
+    # camera-ready PDFs: TrueType (Type 42) fonts, not Type 3 (rejected by several venues' format checks)
+    matplotlib.rcParams.update({"pdf.fonttype": 42, "ps.fonttype": 42, "savefig.bbox": "tight", "savefig.pad_inches": 0.02})
+    PAPER["width"] = a.width
 
     runs = find_runs(a.root, a.runs, a.tag)
     if not runs:
@@ -451,6 +483,10 @@ def main() -> None:
         print(f"[plot_study] {e}; per-series curves skipped (plot a row or column of the grid with --runs)")
         return
 
+    terms = sorted({c for r in runs for c in r.curves if c.startswith("train/") and c != "train/total" and not c.startswith("train/fid_")})
+    smooth = lambda r, k: ema(curve_getter(r, k), a.smooth)  # noqa: E731
+    panel_figure(os.path.join(a.out, "curves_training"), TRAIN_PANELS, groups, keys, colors, smooth, xlabel="images seen (M)")
+    panel_figure(os.path.join(a.out, "curves_loss_terms"), [(t, f"training loss: {t[6:]}") for t in terms], groups, keys, colors, smooth)
     panel_figure(os.path.join(a.out, "curves_fidelity"), [(f"val/{k}", t) for k, t in FIDELITY_PANELS], groups, keys, colors, curve_getter)
     budgets = sorted({int(m.group(1)) for r in runs for c in r.curves if (m := re.match(r"val/b(\d+)/fid_lm_cos$", c))})
     panel_figure(os.path.join(a.out, "curves_budgets"), [(f"val/b{b}/fid_lm_cos", f"LM-space cosine, {b} tokens") for b in budgets],

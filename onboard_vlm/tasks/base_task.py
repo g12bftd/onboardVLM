@@ -147,8 +147,8 @@ class BaseDistillationTask(pl.LightningModule):
         """Train: per-step ``train/<k>``. Val / test: accumulated per (group, budget) and logged at
         epoch end as ``<split>/<group>/b<budget>/<k>``, ``<split>/<group>/<k>``, ``<split>/b<budget>/<k>``
         and ``<split>/<k>`` (image-weighted means; ``val_loss`` = ``val/total``)."""
-        if split == "train":
-            self.log_dict({f"train/{k}": v for k, v in logs.items()}, batch_size=batch_size)
+        if split == "train":  # mean over ranks (every rank logs the same terms every step)
+            self.log_dict({f"train/{k}": v for k, v in logs.items()}, batch_size=batch_size, sync_dist=True)
             return
         g, b = group if isinstance(group, tuple) else (group, None)
         acc = self._eval_sums.setdefault(split, {})
