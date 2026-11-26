@@ -153,11 +153,14 @@ def readiness(lmdb_root: str, evals: str, corpus: str, raw: str, reg: dict, spec
     ok(e2, "E2: ImageNet-1k train tars + NYUv2", "", optional=True)
     e3 = all(b in built_bench for b in E3_MINI)
     ok(e3, "E3 per checkpoint: TextVQA + CV-Bench LMDBs", "", optional=True)
-    base = os.environ.get("CONDA_BASE") or (os.path.dirname(os.path.dirname(os.environ["CONDA_EXE"])) if os.environ.get("CONDA_EXE") else "")
-    py = os.environ.get("ONBOARD_VLM_LMMS_PYTHON") or os.path.join(base, "envs", "onboardvlm-lmms", "bin", "python")
-    has_lmms = os.path.isfile(py) and subprocess.run([py, "-c", "import lmms_eval"], capture_output=True).returncode == 0
+    from onboard_vlm.utils.envs import conda_env_python
+
+    env = os.environ.get("ONBOARD_VLM_LMMS_ENV", "onboardvlm-lmms")
+    py = os.environ.get("ONBOARD_VLM_LMMS_PYTHON") or conda_env_python(env) or ""
+    has_lmms = bool(py) and subprocess.run([py, "-c", "import lmms_eval"], capture_output=True).returncode == 0
     ok(has_lmms, "general suite: lmms-eval environment", py if has_lmms else
-       f"{py} cannot import lmms_eval (docs/setup_cscs.md; or run with --evals e1,e2,e3)", optional=True)
+       f"conda env '{env}' {'cannot import lmms_eval' if py else 'not found'} (bash scripts/setup_envs.sh; or run with --evals e1,e2,e3)",
+       optional=True)
     for x, what in ((e2, "E2 inputs"), (e3, "E3 benchmark LMDBs"), (has_lmms, "the lmms-eval env")):
         if not x:
             issues.append(f"evaluation: {what} missing")

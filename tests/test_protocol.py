@@ -533,3 +533,21 @@ def test_general_suite_tables_retention_and_visual_retention(tmp_path):
     t, s, b = (st[m]["categories"]["OCR & Chart"]["mean"] for m in ("teacher", "student", "blind"))
     assert abs(st["student"]["categories"]["OCR & Chart"]["visual_retention"] - (s - b) / (t - b)) < 1e-9
     assert "General" in (tmp_path / "o" / "tables.tex").read_text()
+
+
+def test_conda_envs_are_found_by_name_wherever_they_live(tmp_path, monkeypatch):
+    """The lmms-eval env is looked up the way `conda activate` resolves names (envs_dirs), not at $CONDA_BASE/envs,
+    so environments can live on scratch; setup_envs.sh is valid bash."""
+    from onboard_vlm.utils.envs import conda_env_python
+
+    py = tmp_path / "scratch" / "envs" / "onboardvlm-lmms" / "bin" / "python"
+    py.parent.mkdir(parents=True)
+    py.write_text("#!/bin/sh\nexec python3 \"$@\"\n")
+    py.chmod(0o755)
+    conda = tmp_path / "conda"
+    conda.write_text(f"#!/bin/sh\n[ \"$1 $2 $3\" = \"run -n onboardvlm-lmms\" ] || exit 1\necho {py}\n")
+    conda.chmod(0o755)
+    monkeypatch.setenv("CONDA_EXE", str(conda))
+    assert conda_env_python("onboardvlm-lmms") == str(py)
+    assert conda_env_python("other") is None
+    assert subprocess.run(["bash", "-n", os.path.join(ROOT, "scripts", "setup_envs.sh")]).returncode == 0

@@ -83,16 +83,18 @@ def jobs_for(target: str, student_dir: str | None, a) -> list[tuple[str, list[st
 
 def lmms_python(explicit: str | None) -> str:
     """The Python of the environment that has lmms-eval: --lmms_python, $ONBOARD_VLM_LMMS_PYTHON, the conda env
-    ``onboardvlm-lmms`` (docs/setup_cscs.md), or this one if it has lmms-eval."""
+    $ONBOARD_VLM_LMMS_ENV (default ``onboardvlm-lmms``, docs/setup_cscs.md; found by name wherever it lives), or this
+    one if it has lmms-eval."""
     import importlib.util
 
     if explicit or os.environ.get("ONBOARD_VLM_LMMS_PYTHON"):
         return explicit or os.environ["ONBOARD_VLM_LMMS_PYTHON"]
-    base = os.environ.get("CONDA_BASE") or (os.path.dirname(os.path.dirname(os.environ["CONDA_EXE"])) if os.environ.get("CONDA_EXE") else "")
-    env = os.environ.get("ONBOARD_VLM_LMMS_ENV", "onboardvlm-lmms")
-    cand = os.path.join(base, "envs", env, "bin", "python") if base else ""
-    if cand and os.path.isfile(cand):
-        return cand
+    sys.path.insert(0, ROOT)
+    from onboard_vlm.utils.envs import conda_env_python
+
+    py = conda_env_python(os.environ.get("ONBOARD_VLM_LMMS_ENV", "onboardvlm-lmms"))
+    if py:
+        return py
     if importlib.util.find_spec("lmms_eval") is not None:
         return sys.executable
     return ""

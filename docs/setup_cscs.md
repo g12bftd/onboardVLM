@@ -7,7 +7,7 @@ processed data (`scripts/paths.sh`):
 ```
 /users/$USER/repos/onboardVLM/      git clone (code; $ONBOARD_VLM_CODE)
 /capstor/scratch/cscs/$USER/onboardvlm/          ($ONBOARD_VLM_ROOT)
-├── miniforge3/                     conda (envs: onboardvlm, onboardvlm-lmms)
+├── miniforge3/                     conda; envs onboardvlm, onboardvlm-lmms (scripts/setup_envs.sh)
 ├── data/
 │   ├── raw/                        EXACTLY as downloaded, never modified
 │   │   ├── vizwiz/ textvqa/ wearvqa/ egoblind/ egotextvqa/ egoschema/ cvbench/           benchmarks
@@ -64,8 +64,26 @@ Then:
 ```bash
 pip install -e ".[data,dev]" && pip install ego4d awscli
 srun --account=<project> --partition=normal --time=00:30:00 bash -c 'python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))" && python -m pytest -q'
-conda create -y --name onboardvlm-lmms --clone onboardvlm && conda run -n onboardvlm-lmms pip install "lmms-eval==0.7.4"
 ```
+
+**Environments off `$HOME`, and the lmms-eval environment.** A conda environment is ~60,000 files, more than the
+`$HOME` quota allows for two of them. Keep the environments in a directory on scratch (or `/capstor/store`, if your
+project has it), registered with conda, so they are still found by name (`conda activate onboardvlm`, and every
+batch job). `scripts/setup_envs.sh` does it reproducibly. It locks the exact package versions of an existing env into
+`env/lock/` (commit those files: they define the environment), registers the directory (`envs_dirs` in
+`~/.condarc`), and rebuilds `onboardvlm` plus `onboardvlm-lmms` there. `onboardvlm-lmms` is the same env plus
+lmms-eval 0.7.4, with torch / torchvision / transformers held at the locked versions. Conda environments cannot be
+moved with `mv`: absolute paths are written into their scripts.
+
+```bash
+source scripts/paths.sh
+bash scripts/setup_envs.sh --envs-dir /capstor/scratch/cscs/$USER/miniforge3/envs --from /users/$USER/miniforge3/envs/onboardvlm
+conda env remove -p /users/$USER/miniforge3/envs/onboardvlm      # once the check at the end says OK
+```
+
+Scratch deletes files that have not been accessed for 30 days (docs.cscs.ch/storage/filesystems). If an environment
+stops working after a pause, delete it and re-run `bash scripts/setup_envs.sh --envs-dir <dir>`: the lock files give
+back the same versions in minutes. The same rule applies to data and outputs on scratch.
 
 ## 3. One-time access (on a login node, after `source scripts/paths.sh`)
 

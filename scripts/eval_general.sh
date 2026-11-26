@@ -18,9 +18,9 @@ ARGS="pretrained=${VLM},max_soft_tokens=${BUDGET}${STUDENT:+,student_dir=${STUDE
 TASKS="${TASKS:-$(python -m onboard_vlm.eval.suites ${JUDGED:+--judged})}"   # the suite list needs only onboard_vlm
 echo "[eval_general] $RUN | budget $BUDGET | ${STUDENT:-original encoder}${BLIND:+ | BLIND} | tasks: $TASKS"
 PY="${ONBOARD_VLM_LMMS_PYTHON:-}"   # lmms-eval lives in its own env (docs/setup_cscs.md)
-if [ -z "$PY" ]; then
-  BASE="${CONDA_BASE:-${CONDA_EXE:+$(dirname "$(dirname "$CONDA_EXE")")}}"
-  if [ -n "$BASE" ] && [ -x "$BASE/envs/onboardvlm-lmms/bin/python" ]; then PY="$BASE/envs/onboardvlm-lmms/bin/python"; else PY=python; fi
+if [ -z "$PY" ]; then  # the env by name, wherever it lives (conda's envs_dirs)
+  PY="$("${CONDA_EXE:-conda}" run -n "${ONBOARD_VLM_LMMS_ENV:-onboardvlm-lmms}" python -c 'import sys; print(sys.executable)' 2>/dev/null | tail -1 || true)"
+  [ -x "$PY" ] || PY=python
 fi
 "$PY" run_lmms_eval.py --model onboard_gemma4 --model_args "$ARGS" --tasks "$TASKS" \
   --batch_size 1 --log_samples --output_path "$OUT/image"
