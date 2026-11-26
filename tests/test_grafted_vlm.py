@@ -105,3 +105,21 @@ def test_runner_end_to_end(vlm, tiny_processor, tmp_path):
     inputs, _ = _eval_inputs(tiny_processor, n=2)
     lp = continuation_logprob(g, inputs, torch.tensor([20, 21]))
     assert lp.shape == (2,) and (lp <= 0).all()
+
+
+def test_real_gemma4_configs_load_with_sdpa_except_audio():
+    """The E2B / E4B checkpoints carry an audio tower whose attention rejects SDPA: the loader asks for SDPA in the
+    language model and vision tower only (checked by building the model on the meta device, no weights)."""
+    import torch
+    from transformers import Gemma4Config, Gemma4ForConditionalGeneration
+
+    from onboard_vlm.teachers.gemma4 import attn_for_config
+    from onboard_vlm.utils.tiny import tiny_gemma4_config
+
+    cfg = tiny_gemma4_config(audio_config={})
+    impl = attn_for_config(cfg, "sdpa")
+    assert impl == {"text_config": "sdpa", "vision_config": "sdpa", "audio_config": "eager", "": "sdpa"}
+    with torch.device("meta"):
+        m = Gemma4ForConditionalGeneration._from_config(cfg, attn_implementation=impl)
+    assert m.config.vision_config._attn_implementation == "sdpa" and m.config.audio_config._attn_implementation == "eager"
+    assert attn_for_config(tiny_gemma4_config(), "sdpa") == "sdpa" and isinstance(cfg, Gemma4Config)

@@ -16,7 +16,7 @@ from onboard_vlm.registry import build_student
 
 CFG = os.path.join(ROOT, "config")
 STUDENTS = sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(CFG, "student", "*.yaml")))
-HEAVY = {"timm_mobilenetv5_300m_gemma3n", "gemma4_truncated", "gemma4_truncated_l8"}  # >150M params or needs the checkpoint: compose-only
+HEAVY = {"timm_mobilenetv5_300m_gemma3n", "gemma4_truncated", "gemma4_truncated_l8", "gemma4_shrink"}  # >150M params or needs the checkpoint: compose-only
 DATA_MODULES = sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(CFG, "data_module", "*.yaml")))
 TASK_CRITERIA = {"FeatureDistillationTask": "feature", "EmbeddingDistillationTask": "embedding", "LogitDistillationTask": "logit"}
 EXPERIMENTS = sorted(os.path.relpath(p, os.path.join(CFG, "experiment"))[:-5] for p in glob.glob(os.path.join(CFG, "experiment", "**", "*.yaml"), recursive=True))

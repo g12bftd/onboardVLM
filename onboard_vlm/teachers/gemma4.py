@@ -55,12 +55,23 @@ def resolve_revision(model_id: str, revision: str | None = None) -> str:
     return revision or SUPPORTED_TEACHERS[model_id]
 
 
+def attn_for_config(config: Any, attn_implementation: Any) -> Any:
+    """Per-sub-model attention: the requested one for the language model and the vision tower, ``eager`` for
+    the audio tower when the checkpoint has one (transformers' ``Gemma4AudioModel`` rejects SDPA, so a single
+    ``"sdpa"`` makes ``from_pretrained`` fail on the real E2B / E4B checkpoints). Audio is never used here."""
+    if not isinstance(attn_implementation, str) or attn_implementation == "eager" or getattr(config, "audio_config", None) is None:
+        return attn_implementation
+    subs = [k for k in ("text_config", "vision_config") if getattr(config, k, None) is not None]
+    return {**dict.fromkeys(subs, attn_implementation), "audio_config": "eager", "": attn_implementation}
+
+
 def load_gemma4_vlm(model_id: str, revision: str | None = None, dtype: str | torch.dtype = "bfloat16", attn_implementation: str = "sdpa", **kw: Any):
     """``Gemma4ForConditionalGeneration.from_pretrained`` of a supported checkpoint, with logging."""
-    from transformers import Gemma4ForConditionalGeneration
+    from transformers import AutoConfig, Gemma4ForConditionalGeneration
 
     rev = resolve_revision(model_id, revision)
     torch_dtype = dtype if isinstance(dtype, torch.dtype) else getattr(torch, dtype)
+    attn_implementation = attn_for_config(AutoConfig.from_pretrained(model_id, revision=rev), attn_implementation)
     with stage(f"Loading original Gemma 4 weights {model_id}@{rev[:7]} ({torch_dtype}, attn={attn_implementation})", log):
         t0 = time.perf_counter()
         vlm = Gemma4ForConditionalGeneration.from_pretrained(
