@@ -28,6 +28,7 @@ dependencies = [
 data = ["datasets>=3.0", "av>=12", "gdown>=5", "kaggle>=2.2", "h5py", "scipy", "pyarrow", "pyyaml"]
 lmms = ["lmms-eval==0.7.4"]  # E3 general benchmarks; install into a separate env (docs/setup_cscs.md)
 dev = ["pytest>=8", "scikit-learn"]
+plots = ["matplotlib>=3.8"]   # scripts/plot_study.py
 
 [tool.setuptools.packages.find]
 include = ["onboard_vlm*"]

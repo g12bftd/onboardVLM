@@ -24,15 +24,19 @@ from onboard_vlm.utils.logging import get_logger, setup_logging, stage
 OmegaConf.register_new_resolver("join", lambda xs, sep="-": sep.join(str(x) for x in xs), replace=True)
 
 
-def _tb_logger(cfg: DictConfig):
+def _loggers(cfg: DictConfig) -> list:
+    """CSV always (``metrics.csv``: every logged value per step, read by scripts/plot_study.py), plus TensorBoard
+    when it is installed. Both write under ``<io.base_output_path>/<tag>/<run_id>``."""
+    from pytorch_lightning.loggers import CSVLogger
+
+    out = [CSVLogger(save_dir=cfg.io.base_output_path, name=cfg.tag, version=cfg.io.version)]
     try:
         from pytorch_lightning.loggers import TensorBoardLogger
 
-        return TensorBoardLogger(save_dir=cfg.io.base_output_path, name=cfg.tag, version=cfg.io.version)
+        out.append(TensorBoardLogger(save_dir=cfg.io.base_output_path, name=cfg.tag, version=cfg.io.version))
     except ModuleNotFoundError:  # tensorboard not installed
-        from pytorch_lightning.loggers import CSVLogger
-
-        return CSVLogger(save_dir=cfg.io.base_output_path, name=cfg.tag, version=cfg.io.version)
+        pass
+    return out
 
 
 def train(cfg: DictConfig) -> None:
@@ -57,9 +61,13 @@ def train(cfg: DictConfig) -> None:
     with stage("Building callbacks, logger and trainer", log):
         callbacks = [hydra.utils.instantiate(c) for c in cfg.callbacks.values()]
         log.info("     callbacks: %s", ", ".join(type(c).__name__ for c in callbacks))
-        tb = _tb_logger(cfg)
-        trainer = pl.Trainer(**OmegaConf.to_container(cfg.trainer, resolve=True), logger=tb, callbacks=callbacks)
-        log.info("     metrics -> %s", getattr(tb, "log_dir", cfg.io.base_output_path))
+        loggers = _loggers(cfg)
+        trainer = pl.Trainer(**OmegaConf.to_container(cfg.trainer, resolve=True), logger=loggers, callbacks=callbacks)
+        log.info("     metrics -> %s", getattr(loggers[0], "log_dir", cfg.io.base_output_path))
+
+    if cfg.training and cfg.get("validate_at_start"):
+        with stage("Validation before training (step 0 of the learning curves)", log):
+            trainer.validate(task, data_module)
 
     if cfg.training:
         log.info("===> Starting fit (datasets are set up and the teacher is loaded at the start of fit)")

@@ -67,6 +67,8 @@ class LMDBVQADataset(Dataset):
         max_frames: in ``"vqa"`` mode, uniformly subsample at most this many stored frames.
         categories: keep only records whose ``category`` is in this list.
         limit: truncate (debugging).
+        sample: a fixed random subset of this many records (seeded by ``sample_seed``, original order kept):
+            unbiased when records are grouped by task or source (CV-Bench), identical for every model.
     """
 
     def __init__(
@@ -78,6 +80,8 @@ class LMDBVQADataset(Dataset):
         max_frames: int | None = None,
         categories: Sequence[str] | None = None,
         limit: int | None = None,
+        sample: int | None = None,
+        sample_seed: int = 0,
     ):
         if mode not in ("vqa", "image"):
             raise ValueError(f"mode must be 'vqa' or 'image', got {mode!r}")
@@ -90,6 +94,11 @@ class LMDBVQADataset(Dataset):
         nfr = meta.get("num_frames") or [0] * len(keys)
         sizes = meta.get("sizes") or [None] * len(keys)
         rows = [(k, c, n, s) for k, c, n, s in zip(keys, cats, nfr, sizes) if categories is None or c in set(categories)]
+        if sample is not None and sample < len(rows):
+            import numpy as np
+
+            keep = np.sort(np.random.default_rng(sample_seed).choice(len(rows), size=sample, replace=False))
+            rows = [rows[i] for i in keep]
         if limit is not None:
             rows = rows[:limit]
         self.index: list[tuple[str, int | None]] = []

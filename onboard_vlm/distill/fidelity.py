@@ -12,6 +12,12 @@ input space ``E(z) = embed_vision(z)``:
 * ``fid_vis_cos_p05`` 5th percentile of the per-token vision cosine (worst tokens);
 * ``fid_cka``        per-image linear CKA of the RMS-normalised token sets (spatial structure),
                      averaged over images.
+
+Squared errors, for direct comparison with the training losses (not scale-invariant in the vision space):
+
+* ``fid_lm_mse``     mean squared error of ``E(z_s)`` and ``E(z_t)`` per element (what the LM receives);
+* ``fid_vis_mse``    mean squared error of the raw 768-d vision tokens per element;
+* ``fid_vis_rel_err`` mean per-token ``||z_s - z_t|| / ||z_t||`` in the vision space.
 """
 
 from __future__ import annotations
@@ -21,7 +27,7 @@ from typing import Callable, Sequence
 import torch
 import torch.nn.functional as F
 
-FIDELITY_KEYS = ("fid_lm_cos", "fid_lm_rel_err", "fid_vis_cos", "fid_vis_cos_p05", "fid_cka")
+FIDELITY_KEYS = ("fid_lm_cos", "fid_lm_rel_err", "fid_lm_mse", "fid_vis_cos", "fid_vis_cos_p05", "fid_vis_mse", "fid_vis_rel_err", "fid_cka")
 
 
 def _rms_normalise(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
@@ -42,13 +48,15 @@ def linear_cka(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 def per_token_fidelity(
     student: torch.Tensor, teacher: torch.Tensor, project: Callable[[torch.Tensor], torch.Tensor] | None = None
 ) -> dict[str, torch.Tensor]:
-    """Per-token cosines (and LM-space relative errors) for packed ``[N, D]`` tokens."""
+    """Per-token cosines, squared and relative errors for packed ``[N, D]`` tokens (LM space if ``project``)."""
     s, t = student.float(), teacher.float()
-    out = {"vis_cos": F.cosine_similarity(s, t, dim=-1)}
+    out = {"vis_cos": F.cosine_similarity(s, t, dim=-1), "vis_mse": (s - t).pow(2).mean(-1),
+           "vis_rel_err": (s - t).norm(dim=-1) / t.norm(dim=-1).clamp_min(1e-12)}
     if project is not None:
         es, et = project(student).float(), project(teacher).float()
         out["lm_cos"] = F.cosine_similarity(es, et, dim=-1)
         out["lm_rel_err"] = (es - et).norm(dim=-1) / et.norm(dim=-1).clamp_min(1e-12)
+        out["lm_mse"] = (es - et).pow(2).mean(-1)
     return out
 
 
@@ -64,10 +72,12 @@ def per_image_fidelity(
     tok = per_token_fidelity(student, teacher, project)
     recs = []
     for s_i, t_i, sl in zip(student.split(list(lengths)), teacher.split(list(lengths)), _slices(lengths)):
-        r = {"num_tokens": int(sl.stop - sl.start), "vis_cos": float(tok["vis_cos"][sl].mean()), "vis_cos_min": float(tok["vis_cos"][sl].min())}
+        r = {"num_tokens": int(sl.stop - sl.start), "vis_cos": float(tok["vis_cos"][sl].mean()), "vis_cos_min": float(tok["vis_cos"][sl].min()),
+             "vis_mse": float(tok["vis_mse"][sl].mean()), "vis_rel_err": float(tok["vis_rel_err"][sl].mean())}
         if "lm_cos" in tok:
             r["lm_cos"] = float(tok["lm_cos"][sl].mean())
             r["lm_rel_err"] = float(tok["lm_rel_err"][sl].mean())
+            r["lm_mse"] = float(tok["lm_mse"][sl].mean())
         if cka:
             r["cka"] = float(linear_cka(_rms_normalise(s_i.float()), _rms_normalise(t_i.float())))
         recs.append(r)
@@ -84,10 +94,12 @@ def fidelity_metrics(
 ) -> dict[str, torch.Tensor]:
     """Batch-level ``fid_*`` metrics (token-weighted means; CKA averaged over images)."""
     tok = per_token_fidelity(student, teacher, project)
-    out = {"fid_vis_cos": tok["vis_cos"].mean(), "fid_vis_cos_p05": torch.quantile(tok["vis_cos"], 0.05)}
+    out = {"fid_vis_cos": tok["vis_cos"].mean(), "fid_vis_cos_p05": torch.quantile(tok["vis_cos"], 0.05),
+           "fid_vis_mse": tok["vis_mse"].mean(), "fid_vis_rel_err": tok["vis_rel_err"].mean()}
     if "lm_cos" in tok:
         out["fid_lm_cos"] = tok["lm_cos"].mean()
         out["fid_lm_rel_err"] = tok["lm_rel_err"].mean()
+        out["fid_lm_mse"] = tok["lm_mse"].mean()
     if cka:
         vals = [linear_cka(_rms_normalise(s.float()), _rms_normalise(t.float())) for s, t in zip(student.split(list(lengths)), teacher.split(list(lengths)))]
         out["fid_cka"] = torch.stack(vals).mean()

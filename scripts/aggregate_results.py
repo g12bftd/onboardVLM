@@ -130,7 +130,7 @@ def fidelity_table(fid: dict[str, list[str]], reference: str | None) -> dict:
         with open(os.path.join(dirs[0], "summary.json")) as f:
             summ = json.load(f)
         for e in summ["sets"]:
-            out.setdefault(f"{e['set']}@{e['budget']}", {})[model] = {k: e.get(k) for k in ("lm_cos", "lm_rel_err", "vis_cos", "cka", "num_images")}
+            out.setdefault(f"{e['set']}@{e['budget']}", {})[model] = {k: e.get(k) for k in ("lm_cos", "lm_rel_err", "lm_mse", "vis_cos", "vis_mse", "cka", "num_images")}
         for d in dirs:
             pi = os.path.join(d, "per_image.jsonl")
             if os.path.isfile(pi):

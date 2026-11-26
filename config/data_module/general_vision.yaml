@@ -75,5 +75,5 @@ samples_per_epoch: 2000000
 collator: {train: true, crop_scale: [0.35, 1.0], hflip_prob: 0.0}   # crop area relative to the largest crop of the batch aspect
 val_collator: {train: false}                                         # full images, bit-exact processor geometry
 num_workers: ${num_workers}
-seed: ${seed}
+seed: ${data_seed}
 allow_missing_sources: ${allow_missing_sources}   # preliminary runs only: leave out sources not built yet

@@ -30,6 +30,8 @@ def load_student(directory: str, map_location: str | torch.device = "cpu", **ove
         config["pretrained"] = False  # weights come from the checkpoint
     if config.get("name") == "gemma4_truncated":
         config["load_weights"] = False  # weights come from the checkpoint (no teacher download)
+    if config.get("name") == "gemma4_shrink":
+        config["load_teacher_weights"] = False
     student = build_student(config)
     student.load_state_dict(load_file(os.path.join(directory, "student.safetensors"), device=str(map_location)))
     return student, config

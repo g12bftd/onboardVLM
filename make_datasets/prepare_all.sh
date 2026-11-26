@@ -18,6 +18,7 @@
 #   benchmarks_download  download:<every benchmark>
 #   benchmarks_extract   unpack the EgoBlind video archives (Google Drive) and check that no video is missing
 #   benchmarks_lmdb      $RAW_ROOT/<benchmark> -> $LMDB_ROOT/<benchmark>/<split>.lmdb (SKIP_BENCHMARKS: leave some out)
+#   lmdb:<benchmark>     one benchmark only (vizwiz textvqa wearvqa cvbench egoblind egotextvqa_outdoor egotextvqa_indoor egoschema)
 #   eval_sets            E1 / E3 image sets -> raw $RAW_ROOT/eval_sets/<set>, processed $EVAL_ROOT/<set>
 #   probe_data           download:imagenet1k + download:nyuv2, NYUv2 -> $EVAL_ROOT/nyuv2
 #   corpus_download      download:<every corpus image source> (objects source = $OBJECTS_SOURCE, default imagenet1k)
@@ -146,6 +147,7 @@ for s in "${STEPS[@]}"; do
   INCOMPLETE=""
   case "$s" in
     corpus:*) bash "$HERE/build_corpus.sh" "${s#corpus:}" ;;
+    lmdb:*) ONLY_BENCHMARKS="${s#lmdb:}" bash "$HERE/build_all_lmdb.sh" ;;
     download:*) download "${s#download:}" ;;
     *) "step_$s" ;;
   esac

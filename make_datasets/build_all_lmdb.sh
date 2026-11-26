@@ -11,10 +11,15 @@ LMDB_ROOT="${LMDB_ROOT:-${ONBOARD_VLM_DATA:-./data/lmdb}}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 L="$HERE/lmdb"
 read -r -a SKIP <<< "${SKIP_BENCHMARKS:-}"
+read -r -a ONLY <<< "${ONLY_BENCHMARKS:-}"   # build only these (prefixes), e.g. "vizwiz" or "egotextvqa_indoor"
 BUILT=() SKIPPED=()
 
 build() {  # build <name> <command...>
-  local name="$1" s; shift
+  local name="$1" s o want=""; shift
+  if [ ${#ONLY[@]} -gt 0 ]; then
+    for o in "${ONLY[@]}"; do [[ "$name" == "$o"* ]] && want=1; done
+    [ -n "$want" ] || return 0
+  fi
   for s in "${SKIP[@]}"; do
     if [[ "$name" == "$s"* ]]; then echo "[lmdb] $name: skipped (SKIP_BENCHMARKS)"; SKIPPED+=("$name"); return; fi
   done

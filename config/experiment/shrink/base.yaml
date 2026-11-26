@@ -1,0 +1,25 @@
+# @package _global_
+# Shrinking study (docs/shrink_study.md): the Gemma 4 vision encoder made smaller, distilled with the main
+# objective (LM-input space + intermediate layers), measured over training time. Every run of the study uses
+# this file; only student.* (and the seeds) change between runs, so every comparison changes one factor.
+#   python -u run_distill.py +experiment=shrink/base student.num_hidden_layers=8 student.hidden_size=384 seed=0
+experiment_name: shrink_L${student.num_hidden_layers}_D${student.hidden_size}_${student.init}_${student.layer_selection}-${student.width_selection}
+layer_map: auto                 # 3 student layers over its depth <- the teacher layers they correspond to
+validate_at_start: true         # step 0 of every learning curve
+defaults:
+  - override /task: embedding_distillation
+  - override /criterion: embedding_tokens
+  - override /teacher: gemma4_e2b
+  - override /student: gemma4_shrink
+  - override /data_module: general_vision_lite
+task:
+  vision_criterion:
+    - {name: token_feature, label: tok_cos, weight: 0.5, metric: cosine}
+    - {name: intermediate_layer, label: mid_feat, weight: 0.5, mode: feature, metric: mse, normalize: layernorm}
+trainer:
+  max_epochs: 10                # 10 x 500k = 5M image samples per run (equal for every run of the study)
+  val_check_interval: 0.5       # 20 validation points + step 0
+callbacks:
+  trajectory:                   # student exports at fixed fractions of training -> scripts/trajectory_eval.py
+    _target_: onboard_vlm.utils.callbacks.TrajectoryCallback
+    dirpath: ${output_root}/trajectories/${run_id}

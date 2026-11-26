@@ -77,6 +77,9 @@ and TextVQA val (VQA accuracy), CV-Bench and the EgoSchema subset (multiple-choi
 lmms-eval suite with `DETERMINISTIC=1` (drops the two GPT-judged tasks). The teacher at 70 tokens is the
 "fewer tokens" baseline.
 
+**Shrinking study** (the first systematic view of the distillation, with curves over training time): the
+Gemma 4 encoder itself made shallower / narrower, see [shrink_study.md](shrink_study.md).
+
 ## 5. Statistics (fixed before the results)
 
 * **Primary endpoint** of every comparison: per-image LM-input-space cosine (`lm_cos`) at 280 tokens on each

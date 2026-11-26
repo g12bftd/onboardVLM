@@ -45,6 +45,30 @@ These train splits (about 45K images) are far too small and narrow to preserve t
 general capabilities. [corpus.md](corpus.md) covers the general-vision corpus (OVLM-GV), its builders
 and the benchmark decontamination blocklist.
 
+## Pre-processing protocol and where it comes from
+
+Every model input, for every dataset, goes through Gemma 4's own processor geometry (resize to multiples of
+48 under the token budget, 16-px patches, 3x3 pooling), reproduced bit-exactly; the student always sees the
+teacher's pixels. What differs per dataset is what is stored and scored:
+
+| dataset | items | stored / sampled | protocol followed |
+|---|---|---|---|
+| VizWiz-VQA | official train / val / test; val scored | images as distributed (long side capped at 2,048 px), 10 answers | VizWiz challenge (Gurari et al., CVPR 2018); EvalAI answer processor + `vqaEval.py` |
+| TextVQA 0.5.1 | official splits; val scored | same | Singh et al., CVPR 2019; EvalAI |
+| CV-Bench | test (2,638) | images as distributed, the dataset's prompts | Tong et al., NeurIPS 2024 (Cambrian-1): overall = ((ADE20K + COCO) / 2 + Omni3D) / 2 |
+| EgoSchema | subset (500 answered), test (5,031) | 32 frames, segment-centred over the 3-minute clip (TSN sampling, Wang et al., ECCV 2016), long side <= 1,280 | Mangalam et al., NeurIPS 2023 D&B (5-way accuracy) |
+| EgoTextVQA | Indoor 2,216; Outdoor 4,848 (high 1920x1080, low 960x540) | 16 frames uniform in `[0, t_question]` (real-time protocol: only video before the question) | Zhou et al., CVPR 2025 |
+| EgoBlind | full test, train | same real-time protocol, 16 frames | Xiao et al., NeurIPS 2025 D&B |
+| WearVQA | test | images as distributed | NeurIPS 2025 D&B |
+| E1 / E3 image sets | the exact HF repos lmms-eval evaluates | bytes unchanged | lmms-eval 0.7.4 |
+| ImageNet-1k (E2) | train 100 per class, val 50,000 | frozen features at 280 tokens; weighted k-NN (k = 20, T = 0.07) and L-BFGS logistic regression | DINO k-NN (Caron et al., ICCV 2021); linear probing as in DINOv2 (Oquab et al., TMLR 2024) |
+| ADE20K, NYUv2 (E2) | ADE20K val 2,000; NYUv2 official 795 / 654 (Silberman et al., ECCV 2012) | linear segmentation / log-depth probe on frozen tokens | DINOv2 linear dense probes |
+| distillation corpus | train | short side >= 224, aspect <= 4, near-uniform removed, exact (SHA-1) and perceptual (dHash) de-duplication, decontamination against every evaluation image (SHA-1 + dHash within 4 bits, Open Images ids, Ego4D video ids), long side <= 1,536 | evaluation-set de-duplication as in DataComp (Gadre et al., NeurIPS 2023 D&B) and DINOv2's curation |
+
+Known deviations: frames and corpus images are stored downscaled (1,280 / 1,536 px), so the 1,120-token
+budget slightly upsamples some inputs; teacher and student are affected identically. WearVQA's official
+judge prompt is not public (docs/metrics.md).
+
 ## Source verification
 
 Some hosts were reachable while this was written, so the following were checked directly:

@@ -7,6 +7,8 @@ output_root: ${oc.env:ONBOARD_VLM_OUT,./outputs}
 corpus_split: {val_fraction: 0.002, test_fraction: 0.002, split_seed: 0}
 objects_source: imagenet1k   # = config/defaults.yaml
 allow_missing_sources: false # preliminary runs: skip sets whose data is not built yet (listed in skipped_sets.json)
+max_images_per_set: null     # a fixed subset of every set (corpus: evenly spaced; benchmarks: seeded sample), e.g. for
+                             # evaluating many checkpoints of a run (scripts/trajectory_eval.py)
 input_domain: {budgets: [70, 140, 280, 560, 1120], max_aspect: 4.0}
 
 run_name: student

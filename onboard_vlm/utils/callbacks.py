@@ -133,3 +133,64 @@ def _hms(seconds: float) -> str:
     s = int(seconds)
     return f"{s // 3600:d}:{s % 3600 // 60:02d}:{s % 60:02d}"
 
+
+
+class TrajectoryCallback(pl.Callback):
+    """Measurements over training time, for learning curves.
+
+    * Logs ``progress/images_seen`` and ``progress/soft_tokens_seen`` with every logged training step and
+      after every validation, so all curves can share a compute axis.
+    * Exports the deployable student at fixed fractions of training (``fractions``; 0 = before the first
+      step) to ``<dirpath>/step_<step>/`` with ``trajectory.json`` (step, fraction, images and soft tokens
+      seen). ``scripts/trajectory_eval.py`` evaluates every export (E1 / E2 / E3) after training.
+
+    Args:
+        dirpath: where the exports go (``${output_root}/trajectories/${run_id}``).
+        fractions: fractions of the total optimizer steps; log-spaced by default (curves change fastest early).
+    """
+
+    def __init__(self, dirpath: str, fractions: tuple[float, ...] = (0.0, 0.01, 0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0)):
+        super().__init__()
+        self.dirpath, self.fractions = dirpath, tuple(sorted(set(float(f) for f in fractions)))
+        self.images = self.tokens = 0
+        self.targets: dict[int, float] = {}
+
+    def _progress(self) -> dict[str, float]:
+        return {"progress/images_seen": float(self.images), "progress/soft_tokens_seen": float(self.tokens)}
+
+    def _log(self, trainer: pl.Trainer) -> None:
+        for lg in trainer.loggers:
+            lg.log_metrics(self._progress(), step=trainer.global_step)
+
+    def _export(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        step = trainer.global_step
+        if trainer.is_global_zero:
+            d = os.path.join(self.dirpath, f"step_{step:08d}")
+            pl_module.export(d)
+            with open(os.path.join(d, "trajectory.json"), "w") as f:
+                json.dump({"step": step, "fraction": self.targets.get(step, step / max(1, trainer.estimated_stepping_batches)),
+                           "images_seen": self.images, "soft_tokens_seen": self.tokens, "epoch": trainer.current_epoch}, f, indent=1)
+            log.info("     trajectory: exported the student at step %d (%s images seen) -> %s", step, f"{self.images:,}", d)
+        trainer.strategy.barrier()
+
+    def on_train_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        total = int(trainer.estimated_stepping_batches)
+        self.targets = {}
+        for f in self.fractions:
+            self.targets.setdefault(int(round(f * total)), f)
+        log.info("     trajectory exports at steps %s of %d -> %s", sorted(self.targets), total, self.dirpath)
+        if 0 in self.targets and trainer.global_step == 0:
+            self._export(trainer, pl_module)
+
+    def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs: Any, batch: Any, batch_idx: int) -> None:
+        w = trainer.world_size
+        self.images += len(batch) * w
+        self.tokens += sum(getattr(batch, "image_token_lengths", []) or []) * w
+        if trainer.global_step % max(1, trainer.log_every_n_steps) == 0:
+            self._log(trainer)
+        if trainer.global_step in self.targets and trainer.global_step > 0:
+            self._export(trainer, pl_module)
+
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if not trainer.sanity_checking:
+            self._log(trainer)

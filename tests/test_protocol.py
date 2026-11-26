@@ -169,6 +169,32 @@ def test_preliminary_runs_leave_out_sources_not_built(tmp_path):
     assert next(iter(dm.train_dataloader())).valid_token_mask.all()
 
 
+def test_shrink_run_records_learning_curves(tmp_path):
+    """A shrink-study run: validation at step 0, MSE metrics and a compute axis in metrics.csv, and student
+    exports at fixed fractions of training (with layer_map auto and the student's own init seed)."""
+    import csv as _csv
+
+    traj = tmp_path / "traj"
+    _run("run_distill.py", "+experiment=debug/dryrun_embedding", "student=gemma4_shrink", "student.num_hidden_layers=2",
+         "student.hidden_size=24", "layer_map=auto", "validate_at_start=true", "trainer.max_steps=4", f"output_root={tmp_path}",
+         f"+callbacks.trajectory={{_target_: onboard_vlm.utils.callbacks.TrajectoryCallback, dirpath: {traj}, fractions: [0, 0.5, 1]}}")
+    steps = sorted(p.name for p in traj.iterdir())
+    assert steps == ["step_00000000", "step_00000002", "step_00000004"]
+    meta = json.load(open(traj / "step_00000004" / "trajectory.json"))
+    assert meta["step"] == 4 and meta["images_seen"] > 0 and (traj / "step_00000000" / "student.safetensors").exists()
+    rows = list(_csv.DictReader(open(next(tmp_path.glob("logs/*/*/metrics.csv")))))
+    val0 = [r for r in rows if r["step"] == "0" and r.get("val/fid_lm_mse")]
+    assert val0 and float(val0[0]["val/fid_lm_cos"]) < 1.0  # step 0: before any update
+    assert any(r.get("progress/images_seen") for r in rows)
+    # every export evaluated (E1 here), skipping finished ones on a re-run
+    ev = ["scripts/trajectory_eval.py", "--run_dir", str(traj), "--evals", "e1", "--teacher_config", "gemma4_tiny", "--budgets", "70",
+          "--extra", "device=cpu", "dtype=float32", "num_workers=0", "input_domain={budgets: [70, 140], max_aspect: 4.0}", "tokens_per_batch=280",
+          "sets=[{name: syn, group: g, dataset: {name: synthetic, num_samples: 4, max_side: 300}}]"]
+    _run(*ev)
+    assert all((traj / st / "eval" / "e1" / "summary.json").exists() for st in steps)
+    assert "0 evaluations to run" in _run(*ev)
+
+
 # ------------------------------------------------------------------------------------------- fidelity
 def test_fidelity_metrics_are_per_token_scale_invariant():
     torch.manual_seed(0)
@@ -298,3 +324,44 @@ def test_blocklist_reads_eval_set_fingerprints(tmp_path):
 
     bl = json.load(open(tmp_path / "bl.json"))
     assert bl["sha1"] == [sha1_bytes((src / "a.png").read_bytes())] and bl["counts"] == {"ev/all": 1}
+
+
+def test_plot_study_on_synthetic_runs(tmp_path):
+    """Curves over images seen per series (seeds averaged), trajectory panels with the teacher's reference
+    lines, final value vs parameters, and the fidelity -> downstream scatter with a run-level bootstrap."""
+    pytest.importorskip("matplotlib")
+    import csv as _csv
+
+    from safetensors.torch import save_file
+
+    for L in (4, 8):
+        for s in (0, 1):
+            rid = f"shrink_L{L}_D768_teacher_uniform-uniform_s{s}"
+            log_dir = tmp_path / "logs" / "onboard_vlm" / rid
+            log_dir.mkdir(parents=True)
+            with open(log_dir / "metrics.csv", "w", newline="") as f:
+                w = _csv.DictWriter(f, fieldnames=["step", "progress/images_seen", "val/fid_lm_cos", "val/b70/fid_lm_cos"])
+                w.writeheader()
+                for step in range(0, 500, 100):
+                    v = 0.9 + L / 100 - 0.3 * np.exp(-step / 100) + 0.001 * s
+                    w.writerow({"step": step, "progress/images_seen": step * 8, "val/fid_lm_cos": v, "val/b70/fid_lm_cos": v})
+            for step in (0, 200, 400):
+                d = tmp_path / "trajectories" / rid / f"step_{step:08d}"
+                (d / "eval" / "e3" / "cvbench").mkdir(parents=True)
+                (d / "eval" / "e1").mkdir()
+                json.dump({"step": step, "images_seen": step * 8}, open(d / "trajectory.json", "w"))
+                save_file({"w": torch.zeros(L, 4)}, str(d / "student.safetensors"))
+                v = 0.6 + L / 100 + step / 2000 + 0.002 * s
+                json.dump({"sets": [{"set": "coco", "group": "ood", "budget": 280, "lm_cos": {"mean": v}}]}, open(d / "eval" / "e1" / "summary.json", "w"))
+                json.dump({"cv_bench_overall": 0.3 + v / 2}, open(d / "eval" / "e3" / "cvbench" / "metrics.json", "w"))
+    teacher = tmp_path / "teacher" / "eval" / "e3" / "cvbench"
+    teacher.mkdir(parents=True)
+    json.dump({"cv_bench_overall": 0.8}, open(teacher / "metrics.json", "w"))
+    out = tmp_path / "plots"
+    log = _run("scripts/plot_study.py", "--root", str(tmp_path), "--out", str(out), "--runs", "shrink_L*_D768_*",
+               "--label", "{L} layers", "--order", "L", "--teacher_dir", str(tmp_path / "teacher"))
+    assert "2 series" in log
+    for name in ("curves_fidelity", "curves_budgets", "trajectory_e1", "trajectory_e3", "final_vs_params", "fidelity_vs_downstream"):
+        assert (out / f"{name}.png").exists() and (out / f"{name}.csv").exists(), name
+    rows = list(_csv.DictReader(open(out / "curves_fidelity.csv")))
+    assert {r["series"] for r in rows} == {"4 layers", "8 layers"} and all(r["n_seeds"] == "2" for r in rows)

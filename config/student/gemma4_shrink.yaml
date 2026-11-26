@@ -1,0 +1,16 @@
+# The Gemma 4 vision encoder itself with fewer layers and / or a narrower width (onboard_vlm/students/gemma4_shrink.py):
+# the teacher's own config with only these sizes changed. Full size + init=teacher is the teacher, weight for weight.
+name: gemma4_shrink
+num_hidden_layers: 16          # teacher: 16
+hidden_size: 768               # teacher: 768 (12 heads x 64); any multiple of 64
+intermediate_size: null        # null = 4 x hidden_size (the teacher's ratio)
+init: teacher                  # teacher (inherit selected layers / channels) | random (transformers' initialiser)
+layer_selection: uniform       # uniform (evenly spaced, DistilBERT) | first | last | [explicit teacher layers]
+width_selection: uniform       # uniform | first (weight selection, Xu et al. ICLR 2024; whole heads / MLP units)
+init_seed: ${init_seed}
+out_dim: ${deploy_vision_dim}
+model_id: ${oc.select:teacher.model_id,google/gemma-4-E2B-it}   # the teacher's config (and weights) are the starting point
+revision: ${oc.select:teacher.revision,null}
+tiny: ${oc.select:teacher.tiny,null}                              # offline dry runs with the tiny random teacher
+attn_implementation: sdpa
+grad_checkpointing: false

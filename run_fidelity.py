@@ -39,7 +39,7 @@ from onboard_vlm.utils.logging import describe_module, get_logger, setup_logging
 
 log = get_logger("onboard_vlm.fidelity")
 ASPECT_BINS = (("portrait", 0.0, 0.9), ("square", 0.9, 1.1), ("landscape", 1.1, 2.0), ("wide", 2.0, float("inf")))
-METRICS = ("lm_cos", "lm_rel_err", "vis_cos", "vis_cos_min", "cka")
+METRICS = ("lm_cos", "lm_rel_err", "lm_mse", "vis_cos", "vis_cos_min", "vis_mse", "vis_rel_err", "cka")
 
 
 def aspect_bin(w_over_h: float) -> str:
@@ -81,6 +81,12 @@ def main(cfg: DictConfig) -> None:
         for es in to_plain(cfg.sets):
             with stage(f"Set {es['name']} ({es.get('group', '-')})", log):
                 dcfg = {**to_plain(cfg.get("dataset_defaults") or {}).get(es["dataset"]["name"], {}), **es["dataset"]}
+                cap = cfg.get("max_images_per_set")
+                if cap:
+                    if dcfg["name"] == "image_corpus":
+                        dcfg["limit"] = min(int(dcfg.get("limit") or cap), int(cap))
+                    elif dcfg["name"] == "lmdb_vqa":
+                        dcfg["sample"] = int(cap)
                 if cfg.get("allow_missing_sources"):
                     dcfg, note = available(dcfg)
                     if note:

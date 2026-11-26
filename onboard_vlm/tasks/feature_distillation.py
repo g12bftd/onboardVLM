@@ -20,6 +20,18 @@ from onboard_vlm.utils.config import to_plain
 from onboard_vlm.utils.logging import describe_module, stage
 
 
+def auto_layer_map(student, points: int = 3, teacher_layers: int = 16) -> dict[int, int]:
+    """``layer_map: auto``: ``points`` student layers spread over its depth (the last one included), each
+    matched to the teacher layer it corresponds to: the layer it was initialised from
+    (``student.source_layers``, gemma4_shrink) or the one at the same relative depth."""
+    n = len(getattr(student, "layer_dims", {}) or {})
+    if n == 0:
+        return {}
+    picks = sorted({max(0, round(k * n / points) - 1) for k in range(1, points + 1)})
+    src = getattr(student, "source_layers", None) or [round((j + 1) * teacher_layers / n) - 1 for j in range(n)]
+    return {j: int(src[j]) for j in picks}
+
+
 class FeatureDistillationTask(BaseDistillationTask):
     """Student vision tokens <- original Gemma 4 vision-tower tokens.
 
@@ -35,7 +47,8 @@ class FeatureDistillationTask(BaseDistillationTask):
     def __init__(self, hparams: Any, adapter: Mapping[str, Any] | None = None, optimizer: Mapping[str, Any] | None = None, scheduler: Mapping[str, Any] | None = None):
         super().__init__(hparams, optimizer, scheduler)
         self.student = self.build_student()
-        self.layer_map = {int(k): int(v) for k, v in (self.cfg.get("layer_map") or {}).items()}
+        lm = self.cfg.get("layer_map")
+        self.layer_map = auto_layer_map(self.student) if lm == "auto" else {int(k): int(v) for k, v in (lm or {}).items()}
         with stage("Building distillation heads and criterion", log):
             dim = teacher_vision_dim(self.cfg["teacher"])
             self.adapter = DistillationAdapter.from_dims(self.student, dim, self.layer_map, **(to_plain(adapter) or {}))

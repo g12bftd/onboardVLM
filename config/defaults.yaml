@@ -3,9 +3,14 @@
 tag: onboard_vlm
 experiment_name: debug
 seed: 0
+# Sources of randomness, separable for variance studies (both default to `seed`):
+#   init_seed: the student's own initialisation (gemma4_shrink; other students follow `seed`);
+#   data_seed: sample order, crops and aspect ratios (the data module and its sampler).
+init_seed: ${seed}
+data_seed: ${seed}
 # Every output path uses run_id, so independent seeds never overwrite each other:
 #   python -u run_distill.py -m +experiment=embedding/gemma4_vit_l8_d384_e2b seed=0,1,2
-run_id: ${experiment_name}_s${seed}
+run_id: ${experiment_name}_${seed_tag:${seed},${init_seed},${data_seed}}
 num_nodes: 1
 num_workers: 8
 batch_size: 32
@@ -80,6 +85,10 @@ callbacks:
 io:
   base_output_path: ${output_root}/logs
   version: ${run_id}
+
+# Learning curves: validate once before the first step (step 0), and export the student at fixed fractions of
+# training (callbacks.trajectory) for scripts/trajectory_eval.py. Off by default; the shrink study turns both on.
+validate_at_start: false
 
 # One run directory per run_id (not a timestamp): every DDP rank launched by srun resolves the same one.
 hydra:
