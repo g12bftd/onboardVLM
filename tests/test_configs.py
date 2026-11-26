@@ -49,7 +49,7 @@ def test_experiment_composes_and_task_matches_criterion(exp):
     cfg = _compose([f"+experiment={exp}", "student_dir=x"])
     task = cfg.task._target_.rsplit(".", 1)[-1]
     assert task in TASK_CRITERIA
-    assert exp.split("/")[0] in ("debug", "baselines", TASK_CRITERIA[task])  # experiments are grouped by distillation type
+    assert exp.split("/")[0] in ("debug", "baselines", "shrink", TASK_CRITERIA[task])  # grouped by distillation type (or study)
     crit = OmegaConf.to_container(cfg.criterion, resolve=True)
     OmegaConf.to_container(cfg.data_module, resolve=True)  # every interpolation resolves
     if task == "LogitDistillationTask":
