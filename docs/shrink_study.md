@@ -35,7 +35,10 @@ changes per study.
 | `init` | 8 x 384: teacher-uniform, teacher-first, random | does inheriting the teacher's weights matter, and how? |
 | `grid` | {4, 8, 12} x {256, 384, 512}, teacher init | depth vs width at equal parameters |
 
-The same launcher runs the literature studies (`--study md_scale | objective | multiplex`: function matching,
+Run names include the teacher whose LM-input space is distilled into (`shrink_e2b_it_L8_D768_teacher_uniform-uniform`;
+`--teacher gemma4_e4b` gives `shrink_e4b_it_...`), so E2B and E4B runs never collide.
+
+The same launcher runs the literature studies (`--study target | md_scale | objective | multiplex`: function matching,
 manifold distillation, intermediate layers, weight multiplexing), described in [methods.md](methods.md).
 
 Run `identity` and `depth` first; `grid` (27 runs with 3 seeds) after the first results.

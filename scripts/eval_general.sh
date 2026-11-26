@@ -4,7 +4,7 @@
 #
 #   bash scripts/eval_general.sh <run_name> [student_dir] [vlm_id] [budget]
 #   bash scripts/eval_general.sh teacher_e2b                                   # the original encoder
-#   bash scripts/eval_general.sh shrink_L8_D768_s0 $ONBOARD_VLM_OUT/students/shrink_L8_D768_teacher_uniform-uniform_s0
+#   bash scripts/eval_general.sh shrink_L8_D768_s0 $ONBOARD_VLM_OUT/students/shrink_e2b_it_L8_D768_teacher_uniform-uniform_s0
 #   BLIND=1 bash scripts/eval_general.sh blind_e2b                             # every image grey: the language-only floor
 #
 # Rule-based scores only by default; JUDGED=1 adds MMBench, MathVista, HallusionBench (GPT judge, needs OPENAI_API_KEY).

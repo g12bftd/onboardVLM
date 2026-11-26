@@ -26,7 +26,7 @@ light -> dark, other comparisons the categorical palette in a fixed order (both 
 deficiencies).
 
     python scripts/plot_study.py --root $ONBOARD_VLM_OUT --out $ONBOARD_VLM_OUT/plots/depth \\
-        --runs "shrink_L*_D768_teacher_uniform-uniform" --label "{L} layers" --order L --teacher_dir $ONBOARD_VLM_OUT/trajectories/_teacher_e2b
+        --runs "shrink_e2b_it_L*_D768_teacher_uniform-uniform" --label "{L} layers" --order L --teacher_dir $ONBOARD_VLM_OUT/trajectories/_teacher_e2b
 """
 
 from __future__ import annotations
@@ -59,9 +59,9 @@ TRAIN_PANELS = [("train/total", "training loss (total)"), ("diag/grad_norm", "gr
                 ("lr", "learning rate"), ("diag/images_per_s", "throughput (images / s)")]
 
 NAMES = [  # experiment names of the studies -> label fields
-    re.compile(r"shrink_L(?P<L>\d+)_D(?P<D>\d+)_(?P<init>[a-z]+)_(?P<ls>[^-]+)-(?P<ws>.+)$"),       # shrink/base
-    re.compile(r"lit_(?P<obj>[A-Za-z_]+?)(?:_w(?P<w>[\d.e+-]+))?_mx(?P<mx>[\d.]+)_L(?P<L>\d+)_D(?P<D>\d+)"
-               r"_x(?P<k>\d+)-(?P<tr>[a-z]+)$"),                                                       # lit/base
+    re.compile(r"shrink_(?:(?P<teacher>e\db_(?:it|base))_)?L(?P<L>\d+)_D(?P<D>\d+)_(?P<init>[a-z]+)_(?P<ls>[^-]+)-(?P<ws>.+)$"),
+    re.compile(r"lit_(?:(?P<teacher>e\db_(?:it|base))_)?(?P<obj>[A-Za-z_]+?)(?:_w(?P<w>[\d.e+-]+))?_mx(?P<mx>[\d.]+)"
+               r"_L(?P<L>\d+)_D(?P<D>\d+)_x(?P<k>\d+)-(?P<tr>[a-z]+)$"),
 ]
 SEED = re.compile(r"_(?P<tag>s\d+(?:_i\d+_d\d+)?)$")
 E3 = {"textvqa": ("vqa_accuracy", "TextVQA val (VQA acc.)"), "cvbench": ("cv_bench_overall", "CV-Bench (overall)"),
@@ -112,13 +112,15 @@ def load_curves(path: str) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     return out
 
 
-def load_point(step_dir: str) -> dict:
+def load_point(step_dir: str, e3_dir: str = "eval") -> dict:
     with open(os.path.join(step_dir, "trajectory.json")) as f:
         p = dict(json.load(f))
-    return {**p, **load_evals(step_dir)}
+    return {**p, **load_evals(step_dir, e3_dir)}
 
 
-def load_evals(d: str) -> dict:
+def load_evals(d: str, e3_dir: str = "eval") -> dict:
+    """E1 / E2 from ``eval/`` (independent of the VLM); E3 and the general suite from ``e3_dir`` (``eval`` in the run's
+    own VLM, ``eval_vlm_<key>`` in another one, trajectory_eval.py --eval_tag)."""
     out: dict = {}
     e1 = os.path.join(d, "eval", "e1", "summary.json")
     if os.path.isfile(e1):
@@ -139,13 +141,13 @@ def load_evals(d: str) -> dict:
                     if isinstance(v, dict) and "mean" in v:
                         out[f"e2/{task}/{k}"] = float(v["mean"])
     for b, (key, _) in E3.items():
-        p = os.path.join(d, "eval", "e3", b, "metrics.json")
+        p = os.path.join(d, e3_dir, "e3", b, "metrics.json")
         if os.path.isfile(p):
             with open(p) as f:
                 v = json.load(f).get(key)
             if isinstance(v, (int, float)):
                 out[f"e3/{b}"] = float(v)
-    lm = os.path.join(d, "eval", "lmms")
+    lm = os.path.join(d, e3_dir, "lmms")
     if os.path.isdir(lm):  # the general suite (lmms-eval, 0-100): per task, per category and overall
         from onboard_vlm.eval.suites import headlines, summarize
 
@@ -173,7 +175,7 @@ def present(runs: list[Run], keys: list[tuple[str, str]], teacher: dict | None =
     return [(k, t) for k, t in keys if k in have]
 
 
-def find_runs(root: str, patterns: list[str], tag: str) -> list[Run]:
+def find_runs(root: str, patterns: list[str], tag: str, vlm: str | None = None) -> list[Run]:
     runs = []
     for traj in sorted(glob.glob(os.path.join(root, "trajectories", "*"))):
         rid = os.path.basename(traj)
@@ -189,7 +191,9 @@ def find_runs(root: str, patterns: list[str], tag: str) -> list[Run]:
         run = Run(rid, config, fields, traj, mc if os.path.isfile(mc) else None)
         if run.metrics_csv:
             run.curves = load_curves(run.metrics_csv)
-        run.points = [load_point(s) for s in sorted(glob.glob(os.path.join(traj, "step_*"))) if os.path.isfile(os.path.join(s, "trajectory.json"))]
+        e3_dir = "eval" if vlm is None or fields.get("teacher", "e2b_it") == vlm else f"eval_vlm_{vlm}"
+        run.points = [load_point(s, e3_dir) for s in sorted(glob.glob(os.path.join(traj, "step_*")))
+                      if os.path.isfile(os.path.join(s, "trajectory.json"))]
         runs.append(run)
     return runs
 
@@ -490,9 +494,11 @@ def main() -> None:
     p.add_argument("--runs", nargs="+", required=True, help="experiment-name globs (all seeds of each are used)")
     p.add_argument("--out", required=True)
     p.add_argument("--label", default="{L} layers x {D}", help="series label from the fields of the name: L, D, init, ls, ws "
-                   "(shrink_*) or obj, w, mx, L, D, k, tr (lit_*)")
+                   "(shrink_*) or obj, w, mx, L, D, k, tr (lit_*), and teacher (both)")
     p.add_argument("--order", default=None, help="numeric field that orders the series (one hue, light -> dark)")
     p.add_argument("--teacher_dir", default=None, help="trajectory_eval.py --teacher output (reference lines)")
+    p.add_argument("--vlm", default=None, help="E3 / general suite measured in this VLM (e2b_it | e4b_it): a run distilled for "
+                   "the other one is read from its eval_vlm_<key>/ (default: every run in its own VLM)")
     p.add_argument("--tag", default="onboard_vlm", help="logger name (config `tag`)")
     p.add_argument("--fidelity_budget", type=int, default=280)
     p.add_argument("--width", type=float, default=5.5, help="figure width in inches (NeurIPS 5.5, ICML 6.75 / column 3.25)")
@@ -505,7 +511,7 @@ def main() -> None:
     matplotlib.rcParams.update({"pdf.fonttype": 42, "ps.fonttype": 42, "savefig.bbox": "tight", "savefig.pad_inches": 0.02})
     PAPER["width"] = a.width
 
-    runs = find_runs(a.root, a.runs, a.tag)
+    runs = find_runs(a.root, a.runs, a.tag, a.vlm)
     if not runs:
         raise SystemExit(f"no runs under {a.root}/trajectories match {a.runs}")
     groups, keys = by_series(runs, a.label, a.order)

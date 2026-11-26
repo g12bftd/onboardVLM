@@ -1,0 +1,14 @@
+# @package _global_
+# (1) on the 768-d *vision* tokens instead of after embed_vision: the target no longer depends on which VLM will read
+# the tokens (E2B and E4B share the vision tower byte for byte; only embed_vision and the LM differ), so one student
+# serves both. RMS-normalised MSE + cosine, both invariant to the per-token scale that embed_vision removes. The
+# LM-space terms are still computed for monitoring, with weight 0. docs/methods.md ("target" study).
+objective_name: fmV
+layer_map: {}
+criterion:
+  - {name: token_feature, label: fm_mse, weight: 0.0, metric: mse, normalize: none}
+  - {name: token_feature, label: fm_cos, weight: 0.0, metric: cosine}
+task:
+  vision_criterion:
+    - {name: token_feature, label: fmV_mse, weight: 1.0, metric: mse, normalize: rms}
+    - {name: token_feature, label: fmV_cos, weight: 1.0, metric: cosine}

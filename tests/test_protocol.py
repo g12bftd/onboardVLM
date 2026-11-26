@@ -216,6 +216,18 @@ def test_literature_objective_runs_end_to_end(tmp_path):
     assert stats["parameters"] < stats["parameters_with_repeats"]  # shared weights counted once
 
 
+def test_vision_space_objective_trains_on_vision_tokens_and_monitors_lm_space(tmp_path):
+    """fmV: the loss is on the 768-d vision tokens only; the LM-space terms are logged with weight 0."""
+    import csv as _csv
+
+    _run("run_distill.py", "+experiment=debug/dryrun_embedding", "student=gemma4_shrink", "student.num_hidden_layers=2",
+         "student.hidden_size=24", "+objective=fmV", "~layer_map", "+layer_map={}", "trainer.max_steps=2", f"output_root={tmp_path}")
+    rows = [r for r in _csv.DictReader(open(next(tmp_path.glob("logs/*/*/metrics.csv")))) if r.get("train/total")]
+    assert rows and all(r.get("train/lm_fm_cos") for r in rows)
+    for r in rows:
+        assert abs(float(r["train/total"]) - float(r["train/vis_fmV_mse"]) - float(r["train/vis_fmV_cos"])) < 1e-4
+
+
 # ------------------------------------------------------------------------------------------- fidelity
 def test_fidelity_metrics_are_per_token_scale_invariant():
     torch.manual_seed(0)

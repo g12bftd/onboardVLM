@@ -267,7 +267,7 @@ figure) and `scripts/aggregate_results.py` (`tables.tex` with booktabs, `tables.
 ## 10. Limitations and what is not verified here
 
 * Nothing has been run at scale in this repository: no real corpus, no real-weight training, no
-  benchmark numbers. The pipeline is covered by 301 offline tests and CPU dry runs with a tiny
+  benchmark numbers. The pipeline is covered by 305 offline tests and CPU dry runs with a tiny
   random Gemma 4.
 * The lmms-eval bridge is written against lmms-eval 0.7.4's `gemma4` model and registry API, read
   from its source. It has not been run end to end.

@@ -137,7 +137,7 @@ def test_evaluation_configs_compose(name):
     OmegaConf.to_container(cfg, resolve=True)
 
 
-STUDIES = ["identity", "depth", "width", "init", "grid", "objective", "md_scale", "multiplex"]
+STUDIES = ["identity", "depth", "width", "init", "grid", "target", "objective", "md_scale", "multiplex"]
 
 
 @pytest.mark.parametrize("study", STUDIES)
@@ -156,6 +156,9 @@ def test_study_launcher_names_are_the_run_ids(study):
         name, overrides = ln.split("|")
         cfg = _compose(overrides.split() + ["seed=0"])
         assert cfg.run_id == f"{name}_s0", (cfg.run_id, name)
+    assert all(f"_{_compose(ln.split('|')[1].split()).teacher.key}_" in ln.split("|")[0] for ln in lines)  # teacher in the name
+    if study == "target":  # the target space x VLM design: vision tokens, E2B's and E4B's LM-input space
+        assert {(ln.split("|")[0].split("_")[1], ln.split("|")[0].split("_")[3]) for ln in lines} == {("e2b", "fmV"), ("e2b", "fm"), ("e4b", "fm")}
     if study == "objective":  # every objective of the literature study, one at a time
         assert {_compose(ln.split("|")[1].split()).objective_name.split("_w")[0] for ln in lines} == {"fm", "md", "fm_md", "fm_fmL", "fm_mdL"}
 
@@ -176,3 +179,18 @@ def test_objectives_build_their_losses(objective):
     relation_only = uses_layers and all(t.get("mode") == "manifold" for t in vc if t["name"] == "intermediate_layer")
     assert cfg["task"]["adapter"].get("layer_heads", True) is (not relation_only)
     assert cfg["data_module"]["collator"]["mixup_alpha"] == 1.0
+
+
+def test_study_launcher_keeps_e2b_and_e4b_runs_apart():
+    """--teacher changes every run name (the launcher would otherwise take E2B outputs for finished E4B runs), and
+    --only selects configurations by name."""
+    import subprocess
+
+    env = {**os.environ, "ONBOARD_VLM_ROOT": "/nonexistent", "ONBOARD_VLM_OUT": "/nonexistent/out"}
+    sh = os.path.join(ROOT, "scripts", "slurm", "submit_shrink_study.sh")
+    names = {t: {ln.split("|")[0] for ln in subprocess.run(["bash", sh, "--study", "objective", "--teacher", t, "--list"], capture_output=True,
+                                                           text=True, env=env, check=True).stdout.split("\n") if ln} for t in ("e2b", "gemma4_e4b")}
+    assert len(names["e2b"]) == len(names["gemma4_e4b"]) == 6 and not names["e2b"] & names["gemma4_e4b"]
+    only = subprocess.run(["bash", sh, "--study", "objective", "--only", "*_fm_mx*", "--list"], capture_output=True, text=True, env=env,
+                          check=True).stdout.split()
+    assert [ln.split("|")[0] for ln in only if "|" in ln] == ["lit_e2b_it_fm_mx0.0_L8_D384_x1-none", "lit_e2b_it_fm_mx1.0_L8_D384_x1-none"]

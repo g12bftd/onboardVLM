@@ -3,7 +3,7 @@
 # objective (LM-input space + intermediate layers), measured over training time. Every run of the study uses
 # this file; only student.* (and the seeds) change between runs, so every comparison changes one factor.
 #   python -u run_distill.py +experiment=shrink/base student.num_hidden_layers=8 student.hidden_size=384 seed=0
-experiment_name: shrink_L${student.num_hidden_layers}_D${student.hidden_size}_${student.init}_${student.layer_selection}-${student.width_selection}
+experiment_name: shrink_${teacher.key}_L${student.num_hidden_layers}_D${student.hidden_size}_${student.init}_${student.layer_selection}-${student.width_selection}
 layer_map: auto                 # 3 student layers over its depth <- the teacher layers they correspond to
 validate_at_start: true         # step 0 of every learning curve
 defaults:

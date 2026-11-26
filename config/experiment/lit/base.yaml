@@ -6,7 +6,8 @@
 #   (3) (1) or (2) on intermediate layers                                   objective=fm_fmL | fm_mdL
 #   (4) weight multiplexing (Zhang et al., CVPR 2022)                       student.share_every=2 student.share_transform=linear|dwconv|none
 #   python -u run_distill.py +experiment=lit/base objective=fm_mdL student.num_hidden_layers=8 student.hidden_size=384 seed=0
-experiment_name: lit_${objective_name}_mx${data_module.collator.mixup_alpha}_L${student.num_hidden_layers}_D${student.hidden_size}_x${student.share_every}-${student.share_transform}
+# teacher=gemma4_e4b distils into E4B's LM-input space (same vision tower, other embed_vision); the run name says which.
+experiment_name: lit_${teacher.key}_${objective_name}_mx${data_module.collator.mixup_alpha}_L${student.num_hidden_layers}_D${student.hidden_size}_x${student.share_every}-${student.share_transform}
 validate_at_start: true         # step 0 of every learning curve
 defaults:
   - /objective: fm              # after the criterion group, so its terms replace the criterion list

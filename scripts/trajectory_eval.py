@@ -35,7 +35,7 @@ E3_BENCHMARKS = ("textvqa", "cvbench")  # general (OCR, vision-centric); the app
 
 def jobs_for(target: str, student_dir: str | None, a) -> list[tuple[str, list[str], str]]:
     """``(name, command, done_file)`` for one export (``student_dir``) or the teacher (``None``)."""
-    out = os.path.join(target, "eval")
+    out = os.path.join(target, "eval" + (f"_{a.eval_tag}" if a.eval_tag else ""))
     tag = os.path.basename(os.path.normpath(target))
     run = os.path.basename(os.path.dirname(os.path.normpath(target))) if student_dir else tag
     common = [f"teacher={a.teacher_config}", *a.extra]
@@ -93,6 +93,7 @@ def main() -> None:
     p.add_argument("--gpus", type=int, default=1)
     p.add_argument("--teacher_config", default="gemma4_e2b", help="config/teacher/<name>.yaml of the run (gemma4_e2b | gemma4_e4b)")
     p.add_argument("--vlm_id", default=None, help="deployment VLM for E3 (default: the teacher's)")
+    p.add_argument("--eval_tag", default="", help="write to eval_<tag>/ instead of eval/ (e.g. vlm_e4b_it: E3 in the other VLM)")
     p.add_argument("--budgets", default="70,280,1120")
     p.add_argument("--e1_images", type=int, default=500)
     p.add_argument("--probes", default="imagenet,nyuv2")
