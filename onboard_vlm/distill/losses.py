@@ -35,7 +35,13 @@ def normalize_tokens(x: torch.Tensor, mode: str, eps: float = 1e-6) -> torch.Ten
     raise ValueError(f"unknown normalize mode {mode!r}")
 
 
-def _select(out: StudentVisionOutput | TeacherVisionOutput, which: int | None) -> torch.Tensor:
+def _select(out: StudentVisionOutput | TeacherVisionOutput, which: int | None, raw: bool = False) -> torch.Tensor:
+    """Final (``which=None``) or layer tokens; ``raw``: the student's features before any projection head."""
+    if raw and isinstance(out, StudentVisionOutput):
+        if which is None and out.raw_tokens is not None:
+            return out.raw_tokens
+        if which is not None and which in out.raw_intermediate_tokens:
+            return out.raw_intermediate_tokens[which]
     if which is None:
         return out.tokens
     if which not in out.intermediate_tokens:
@@ -129,13 +135,69 @@ class RelationalTokenLoss(nn.Module):
         return torch.stack([self.per_image(s, t) for s, t in zip(s_parts, t_parts)]).mean()
 
 
+@register_loss("manifold")
+class ManifoldLoss(nn.Module):
+    """Fine-grained manifold distillation (Hao et al., NeurIPS 2022): match the *relations between tokens*.
+
+    Tokens are L2-normalised per token (so student and teacher widths may differ: no projection head), and
+    relation matrices ``M = F F^T`` of student and teacher are matched with a squared error (mean over entries):
+
+    * ``intra``: per image, the ``N x N`` relations of its own tokens (spatial structure of one image);
+    * ``inter``: per token position, the ``B x B`` relations across the images of the batch (needs every image
+      to have the same token count, which shape-exact batches guarantee; skipped otherwise);
+    * ``random``: ``num_random`` tokens sampled from the whole batch, ``K x K`` relations (mixes both).
+
+    The paper's loss is ``alpha * intra + beta * inter + gamma * random``. Give the weights here, or configure
+    one ``manifold`` entry per term (``intra: 1, inter: 0, random: 0`` ...) so each term has its own curve.
+    ``reduction``: ``mean`` over the matrix entries (size-free) or ``sum`` = the squared Frobenius norm of each
+    relation-matrix difference (averaged over images / positions), which grows with the token count.
+
+    A term that is undefined for a batch (``inter`` with images of different token counts) returns ``None``:
+    :class:`CompositeLoss` leaves it out of evaluation means (and logs 0 in training, where every rank logs every key).
+    """
+
+    def __init__(self, intra: float = 1.0, inter: float = 1.0, random: float = 1.0, num_random: int = 256, reduction: str = "mean"):
+        super().__init__()
+        if reduction not in ("mean", "sum"):
+            raise ValueError(f"reduction must be mean | sum, got {reduction!r}")
+        self.w = {"intra": float(intra), "inter": float(inter), "random": float(random)}
+        self.num_random = int(num_random)
+        self.reduction = reduction
+
+    def _rel_mse(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        d = (a @ a.transpose(-1, -2) - b @ b.transpose(-1, -2)).pow(2)
+        return d.mean() if self.reduction == "mean" else d.sum(dim=(-2, -1)).mean()
+
+    def terms(self, s: torch.Tensor, t: torch.Tensor, lengths: Sequence[int]) -> dict[str, torch.Tensor]:
+        s, t = F.normalize(s.float(), dim=-1), F.normalize(t.detach().float(), dim=-1)
+        out: dict[str, torch.Tensor] = {}
+        if self.w["intra"]:
+            out["intra"] = torch.stack([self._rel_mse(a, b) for a, b in zip(torch.split(s, list(lengths)), torch.split(t, list(lengths)))]).mean()
+        if self.w["inter"] and len(lengths) > 1 and len(set(lengths)) == 1:
+            n = int(lengths[0])
+            out["inter"] = self._rel_mse(s.view(len(lengths), n, -1).transpose(0, 1), t.view(len(lengths), n, -1).transpose(0, 1))
+        if self.w["random"] and s.shape[0] > 1:
+            idx = torch.randperm(s.shape[0], device=s.device)[: self.num_random]
+            out["random"] = self._rel_mse(s[idx], t[idx])
+        return out
+
+    def forward(self, student: StudentVisionOutput, teacher: TeacherVisionOutput, which: int | None = None) -> torch.Tensor | None:
+        _check_aligned(student, teacher)
+        s = _select(student, which, raw=True)  # relations need no projection: the student's own features
+        terms = self.terms(s, _select(teacher, which), student.image_token_lengths)
+        if not terms:
+            return None  # undefined for this batch (e.g. inter-image relations of images with different token counts)
+        return sum(self.w[k] * v for k, v in terms.items())
+
+
 @register_loss("intermediate_layer")
 class IntermediateLayerLoss(nn.Module):
     """Layer-mapped hidden-token matching (``layer_map: {student_idx: teacher_idx}`` lives in the adapter).
 
     Args:
         layers: teacher layer indices to match (default: every layer present in the adapted student output).
-        mode: ``"feature"`` (:class:`TokenFeatureLoss`) or ``"relational"`` (:class:`RelationalTokenLoss`).
+        mode: ``"feature"`` (:class:`TokenFeatureLoss`, FitNets-style), ``"relational"`` (:class:`RelationalTokenLoss`)
+            or ``"manifold"`` (:class:`ManifoldLoss`, Hao et al. 2022 applied to hidden layers as in their paper).
         **inner: kwargs of the inner loss.
     """
 
@@ -146,14 +208,17 @@ class IntermediateLayerLoss(nn.Module):
             self.inner: nn.Module = TokenFeatureLoss(**inner)
         elif mode == "relational":
             self.inner = RelationalTokenLoss(**inner)
+        elif mode == "manifold":
+            self.inner = ManifoldLoss(**inner)
         else:
             raise ValueError(f"unknown mode {mode!r}")
 
-    def forward(self, student: StudentVisionOutput, teacher: TeacherVisionOutput, which: int | None = None) -> torch.Tensor:
+    def forward(self, student: StudentVisionOutput, teacher: TeacherVisionOutput, which: int | None = None) -> torch.Tensor | None:
         layers = self.layers if self.layers is not None else sorted(student.intermediate_tokens)
         if not layers:
             raise ValueError("IntermediateLayerLoss has no layers to match (empty layer_map?)")
-        return torch.stack([self.inner(student, teacher, which=i) for i in layers]).mean()
+        vals = [v for i in layers if (v := self.inner(student, teacher, which=i)) is not None]
+        return torch.stack(vals).mean() if vals else None
 
 
 @register_loss("grafted_logit_kd")
@@ -224,6 +289,10 @@ class CompositeLoss(nn.Module):
         logs: dict[str, torch.Tensor] = {}
         for label, w, loss in zip(self.labels, self.weights, self.losses):
             v = loss(student, teacher)
+            if v is None:  # term undefined for this batch: no contribution; logged as 0 only in training (DDP key sync)
+                if self.training:
+                    logs[prefix + label] = total.new_zeros(())
+                continue
             logs[prefix + label] = v.detach()
             total = total + w * v
         return total, logs

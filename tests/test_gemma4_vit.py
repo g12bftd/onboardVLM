@@ -1,5 +1,7 @@
 """Gemma 4-architecture student: the unchanged transformers Gemma4VisionModel at a smaller size."""
 
+import json
+
 import pytest
 import torch
 
@@ -111,3 +113,42 @@ def test_shrink_at_full_size_is_the_teacher_and_shrinks_consistently(tmp_path):
     assert select(16, 8, "uniform") == [0, 2, 4, 6, 9, 11, 13, 15] and select(16, 4, "last") == [12, 13, 14, 15]
     with pytest.raises(ValueError):
         _shrink(teacher, hidden_size=50)  # not a whole number of heads
+
+
+def test_weight_multiplexing_shares_weights_and_starts_as_the_shared_teacher(tmp_path):
+    """MiniViT on the Gemma 4 encoder: k consecutive layers share attention + MLP (stored and counted once), each
+    layer keeps its norms and one identity-initialised transform; teacher init takes a group's weights from its
+    first layer; exports reload exactly."""
+    import torch
+
+    from onboard_vlm.students.io import load_student, save_student
+    from onboard_vlm.teachers.gemma4 import Gemma4Teacher
+    from onboard_vlm.utils.tiny import tiny_gemma4_config
+
+    teacher = Gemma4Teacher(config=tiny_gemma4_config(**SHRINK_TINY), load="vision", dtype="float32")
+    ti = _shrink_batch()
+    run = lambda m: m(pixel_values=ti.pixel_values, pixel_position_ids=ti.pixel_position_ids).tokens  # noqa: E731
+    plain = _shrink(teacher)
+    with torch.no_grad():
+        for transform in ("none", "linear", "dwconv"):
+            m = _shrink(teacher, share_every=2, share_transform=transform)
+            L = m.encoder.encoder.layers
+            assert L[1].self_attn is L[0].self_attn and L[3].mlp is L[2].mlp and L[2].self_attn is not L[0].self_attn
+            assert L[1].input_layernorm is not L[0].input_layernorm  # norms are never shared
+            torch.testing.assert_close(L[1].self_attn.q_proj.linear.weight, teacher.vision_tower.encoder.layers[0].self_attn.q_proj.linear.weight)
+            if transform == "none":
+                base, n_base = run(m), m.unique_parameters()
+                assert n_base < plain.unique_parameters()
+            else:
+                torch.testing.assert_close(run(m), base)  # identity-initialised transforms change nothing at step 0
+                assert m.unique_parameters() > n_base
+        m = _shrink(teacher, share_every=2, share_transform="dwconv")
+        for t in m.transforms:  # break the identity, then check the export round trip
+            t.conv.weight.add_(0.01 * torch.randn_like(t.conv.weight))
+        out = run(m)
+        save_student(str(tmp_path / "mx"), m, {"name": "gemma4_shrink", "tiny": SHRINK_TINY, "out_dim": 96, "share_every": 2,
+                                               "share_transform": "dwconv"})
+        back, _ = load_student(str(tmp_path / "mx"))
+        torch.testing.assert_close(run(back.eval()), out)
+        assert back.encoder.encoder.layers[1].mlp is back.encoder.encoder.layers[0].mlp
+        assert json.load(open(tmp_path / "mx" / "student_stats.json"))["parameters"] == m.unique_parameters()

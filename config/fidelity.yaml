@@ -31,7 +31,6 @@ sets:
   - {name: corpus_objects, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: "${corpus_root}/${objects_source}"}}
   - {name: corpus_scenes, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/openimages", "${corpus_root}/sa1b"]}}
   - {name: corpus_text_rich, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}}
-  - {name: corpus_egocentric, group: in_dist, dataset: {name: image_corpus, split: test, limit: 5000, require_finalized: true, root: ["${corpus_root}/egocentric/ego4d", "${corpus_root}/egocentric/epic_kitchens"]}}
   # held-out datasets never seen in training (make_datasets/eval_sets; decontaminated by the blocklist)
   - {name: coco_val2017, group: ood, dataset: {name: image_corpus, root: "${eval_root}/coco_val2017", split: all}}
   - {name: ade20k_val, group: ood, dataset: {name: image_corpus, root: "${eval_root}/ade20k_val", split: all}}
@@ -40,12 +39,10 @@ sets:
   - {name: infovqa_val, group: ood, dataset: {name: image_corpus, root: "${eval_root}/infovqa_val", split: all}}
   - {name: chartqa_test, group: ood, dataset: {name: image_corpus, root: "${eval_root}/chartqa_test", split: all}}
   - {name: realworldqa, group: ood, dataset: {name: image_corpus, root: "${eval_root}/realworldqa", split: all}}
-  # target domain: the images of the downstream benchmarks (fidelity <-> accuracy correlation)
-  - {name: vizwiz_val, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: image}}
-  - {name: textvqa_val, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/textvqa", split: val, mode: image}}
-  - {name: wearvqa, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/wearvqa", split: test, mode: image}}
-  - {name: cvbench, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/cvbench", split: test, mode: image}}
-  - {name: egoschema_frames, group: target, dataset: {name: lmdb_vqa, path: "${data_root}/egoschema", split: subset, mode: image, video_frames: all}}
+  # images of the general benchmarks themselves (fidelity <-> downstream accuracy, onboard_vlm/eval/suites.py)
+  - {name: gqa_testdev, group: ood, dataset: {name: image_corpus, root: "${eval_root}/gqa_testdev", split: all, limit: 5000}}
+  - {name: textvqa_val, group: ood, dataset: {name: image_corpus, root: "${eval_root}/textvqa_val", split: all}}
+  - {name: mmvp, group: ood, dataset: {name: image_corpus, root: "${eval_root}/mmvp", split: all}}
 
 defaults:
   - _self_

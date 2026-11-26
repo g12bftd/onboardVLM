@@ -15,7 +15,8 @@ Configuration, data and training follow TimeFM `cerebro_v2`:
 
 **The experimental protocol** (claims and evidence, student contract, input domain, training,
 baselines, evaluation tiers, statistics, decontamination, ablations, run order) is in
-[docs/protocol.md](docs/protocol.md).
+[docs/protocol.md](docs/protocol.md). The distillation methods from the literature (function matching, manifold
+distillation, intermediate layers, weight multiplexing) and their studies: [docs/methods.md](docs/methods.md).
 
 ## The teacher
 
@@ -163,15 +164,25 @@ python -u run_distill.py -m +experiment=sweeps/corpus_mixture
 ```
 
 ```bash
-python run_eval.py -m benchmark=vizwiz_vqa,textvqa,wearvqa,egoblind,egotextvqa_outdoor_high,egotextvqa_outdoor_low,egotextvqa_indoor,egoschema_subset,cvbench student_dir=outputs/students/embedding_gemma4_vit_l8_d384_e2b_s0 run_name=g4vit_s0
+python -u run_distill.py +experiment=lit/base objective=fm_mdL student.share_every=2 student.share_transform=linear seed=0   # docs/methods.md
 ```
 
 ```bash
-bash scripts/eval_general.sh g4vit_s0 outputs/students/embedding_gemma4_vit_l8_d384_e2b_s0      # E3 general suite (lmms-eval)
+bash scripts/eval_general.sh g4vit_s0 outputs/students/embedding_gemma4_vit_l8_d384_e2b_s0      # E3: the general suite (lmms-eval)
 ```
 
-The last two commands evaluate an exported student on the target benchmarks and on the general
-lmms-eval suite. `scripts/aggregate_results.py` turns all outputs into tables with bootstrap CIs and
+```bash
+BLIND=1 bash scripts/eval_general.sh blind_e2b                                                   # E3: the no-image floor (once)
+```
+
+```bash
+python run_eval.py -m benchmark=vizwiz_vqa,wearvqa,egoschema_subset student_dir=outputs/students/embedding_gemma4_vit_l8_d384_e2b_s0 run_name=g4vit_s0   # application check
+```
+
+`lit/base` runs the literature objectives (function matching, manifold distillation, intermediate layers,
+weight multiplexing; [docs/methods.md](docs/methods.md)). The E3 commands evaluate an exported student on the
+general suite (Cambrian-1 protocol plus POPE, MMStar and InfoVQA, rule-based scores) and the language model's
+blind floor. The application benchmarks are a secondary check. `scripts/aggregate_results.py` turns all outputs into tables with bootstrap CIs and
 paired tests against the teacher.
 
 Training batches hold one budget and one processor shape each (no padding) and about
@@ -217,8 +228,8 @@ All previously excluded families now work. Details and the shift-equivariance pr
   * objects: ImageNet-1k (ImageNet-21k optional);
   * scenes: Open Images V7 and SA-1B;
   * text-rich: PixMo-Docs, SynthDoG-en and The Cauldron documents / charts / UI;
-  * egocentric: Ego4D and EPIC-KITCHENS-100 frames;
-  * the target train splits.
+  * ablation only (`data_module=general_vision_plus`): Ego4D and EPIC-KITCHENS-100 frames and the
+    benchmark train splits. The default corpus is general-purpose, with no application domain.
 
   Each source is preprocessed once into its own LMDB dataset. Mixture weights, groups and the
   train / val / test split are set in YAML and applied by the loader, so every ablation is a CLI

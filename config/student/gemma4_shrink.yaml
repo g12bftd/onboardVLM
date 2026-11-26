@@ -7,6 +7,8 @@ intermediate_size: null        # null = 4 x hidden_size (the teacher's ratio)
 init: teacher                  # teacher (inherit selected layers / channels) | random (transformers' initialiser)
 layer_selection: uniform       # uniform (evenly spaced, DistilBERT) | first | last | [explicit teacher layers]
 width_selection: uniform       # uniform | first (weight selection, Xu et al. ICLR 2024; whole heads / MLP units)
+share_every: 1                 # weight multiplexing (MiniViT, Zhang et al. CVPR 2022): k consecutive layers share attention + MLP
+share_transform: linear        # per-layer transform of shared layers: linear | dwconv (3x3 depthwise on the patch grid) | none
 init_seed: ${init_seed}
 out_dim: ${deploy_vision_dim}
 model_id: ${oc.select:teacher.model_id,google/gemma-4-E2B-it}   # the teacher's config (and weights) are the starting point

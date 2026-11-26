@@ -34,7 +34,8 @@ class ProfileRow:
     gmacs: float
     gflops: float
     peak_activation_mb: float
-    latency_ms: float | None = None
+    latency_ms: float | None = None      # median over latency_iters calls, after warm-up
+    latency_p90_ms: float | None = None
 
 
 class _LiveTensorMemory(TorchDispatchMode):
@@ -129,22 +130,27 @@ def profile_encoder(
             with mem:
                 run()
             peak = mem.peak
-        latency = None
-        if latency_iters:
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            for _ in range(latency_iters):
+        latency = latency_p90 = None
+        if latency_iters:  # batch-1 latency: median (and p90) of synchronised per-call times after warm-up
+            sync = torch.cuda.synchronize if device.type == "cuda" else (lambda: None)
+            for _ in range(max(3, latency_iters // 5)):
                 run()
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            latency = (time.perf_counter() - t0) / latency_iters * 1e3
-        rows.append(ProfileRow(name, budget, hw, (hw[0] // 48) * (hw[1] // 48), round(params_m, 3), round(flops / 2e9, 3), round(flops / 1e9, 3), round(peak / 2**20, 2), latency))
+            times = []
+            for _ in range(latency_iters):
+                sync()
+                t0 = time.perf_counter()
+                run()
+                sync()
+                times.append((time.perf_counter() - t0) * 1e3)
+            times.sort()
+            latency = round(times[len(times) // 2], 3)
+            latency_p90 = round(times[min(len(times) - 1, int(0.9 * len(times)))], 3)
+        rows.append(ProfileRow(name, budget, hw, (hw[0] // 48) * (hw[1] // 48), round(params_m, 3), round(flops / 2e9, 3), round(flops / 1e9, 3), round(peak / 2**20, 2), latency, latency_p90))
     return rows
 
 
 def format_table(rows: Sequence[ProfileRow]) -> str:
-    cols = ["model", "token_budget", "image_hw", "num_tokens", "params_m", "gmacs", "gflops", "peak_activation_mb", "latency_ms"]
+    cols = ["model", "token_budget", "image_hw", "num_tokens", "params_m", "gmacs", "gflops", "peak_activation_mb", "latency_ms", "latency_p90_ms"]
     data = [[str(asdict(r)[c]) for c in cols] for r in rows]
     widths = [max(len(c), *(len(d[i]) for d in data)) for i, c in enumerate(cols)]
     line = lambda vals: "| " + " | ".join(v.ljust(w) for v, w in zip(vals, widths)) + " |"  # noqa: E731

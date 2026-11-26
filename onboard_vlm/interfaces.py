@@ -127,7 +127,13 @@ class StudentVisionOutput(_PackedTokens):
         intermediate_tokens: ``{layer_idx: FloatTensor[N, D_layer]}`` hidden tokens on the same
             48-px grid (finer-grained features are average-pooled with exact integer factors).
         image_token_lengths: tokens per image, ``sum == N``.
+        raw_tokens / raw_intermediate_tokens: set by the ``DistillationAdapter`` (training only): the student's
+            own features before the projection heads (intermediate ones keyed by *teacher* layer), for losses
+            that need no projection (token relations, Hao et al. 2022).
     """
+
+    raw_tokens: torch.Tensor | None = None
+    raw_intermediate_tokens: dict[int, torch.Tensor] = field(default_factory=dict)
 
 
 @dataclass

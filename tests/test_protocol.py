@@ -201,6 +201,21 @@ def test_shrink_run_records_learning_curves(tmp_path):
     assert "0 evaluations to run" in _run(*ev)
 
 
+def test_literature_objective_runs_end_to_end(tmp_path):
+    """Manifold distillation on intermediate layers (no projection heads) + weight multiplexing + consistent mixup:
+    one tiny CPU run, with each loss term logged on its own."""
+    import csv as _csv
+
+    _run("run_distill.py", "+experiment=debug/dryrun_embedding", "student=gemma4_shrink", "student.num_hidden_layers=3",
+         "student.hidden_size=24", "student.share_every=2", "student.share_transform=dwconv", "+objective=fm_mdL",
+         "+data_module.collator.mixup_alpha=1.0", "trainer.max_steps=2", f"output_root={tmp_path}")
+    rows = list(_csv.DictReader(open(next(tmp_path.glob("logs/*/*/metrics.csv")))))
+    train = [r for r in rows if r.get("train/vis_mdL_intra")]
+    assert train and all(r.get("train/lm_fm_cos") and r.get("train/vis_mdL_random") for r in train)
+    stats = json.load(open(next(tmp_path.glob("students/*/student_stats.json"))))
+    assert stats["parameters"] < stats["parameters_with_repeats"]  # shared weights counted once
+
+
 # ------------------------------------------------------------------------------------------- fidelity
 def test_fidelity_metrics_are_per_token_scale_invariant():
     torch.manual_seed(0)
@@ -377,3 +392,50 @@ def test_plot_study_on_synthetic_runs(tmp_path):
         assert (out / f"{name}.png").exists() and (out / f"{name}.csv").exists(), name
     rows = list(_csv.DictReader(open(out / "curves_fidelity.csv")))
     assert {r["series"] for r in rows} == {"4 layers", "8 layers"} and all(r["n_seeds"] == "2" for r in rows)
+
+
+def test_consistent_mixup_gives_teacher_and_student_the_same_pixels():
+    """Function matching (Beyer et al. 2022): mixed images, and the teacher's patches are built from the very
+    pixels the student sees."""
+    from onboard_vlm.geometry import build_teacher_patches
+
+    ds = SyntheticVQADataset(4, max_side=300)
+    samples = [{**ds[i], "batch_spec": ("crop", 70, 288, 384)} for i in range(4)]
+    plain = DualViewCollator(train=True, crop_scale=(1.0, 1.0), seed=3)(samples)
+    mixed = DualViewCollator(train=True, crop_scale=(1.0, 1.0), seed=3, mixup_alpha=1.0, mixup_prob=1.0)(samples)
+    assert not torch.allclose(plain.student_images, mixed.student_images)
+    imgs = [mixed.student_images[i, :, :288, :384] for i in range(4)]
+    pv, _ = build_teacher_patches(imgs, max_patches=70 * 9)
+    assert torch.equal(pv, mixed.teacher_inputs.pixel_values)  # identical pixels for both networks
+    assert torch.allclose(mixed.student_images * 255, (mixed.student_images * 255).round(), atol=1e-3)  # 8-bit pixels
+
+
+def test_general_suite_tables_retention_and_visual_retention(tmp_path):
+    """Cambrian-1 categories from lmms-eval results json (0-100), seed mean, retention vs the teacher, and the share
+    of the teacher's advantage over the blind run (grey images) a student keeps; per-question ANLS for DocVQA."""
+    from onboard_vlm.eval import suites
+
+    assert "mmbench_en_dev" not in suites.tasks() and "mmbench_en_dev" in suites.tasks(judged=True)
+    assert suites.to_100("mme", 1500) == 75.0 and suites.to_100("gqa", 0.6) == 60.0
+    assert suites.anls("the cat", ["The cat"]) == 1.0 and suites.anls("dog", ["cat"]) == 0.0
+    assert suites.item_score("pope", {"pope_accuracy": {"score": 1.0}}) == 1.0
+    assert suites.item_score("cv_bench_2d", {"cv_bench_acc": {"is_correct": False}}) == 0.0
+
+    def write(d, gqa, chartqa):
+        d.mkdir(parents=True)
+        json.dump({"results": {"gqa": {"exact_match,none": gqa}, "chartqa": {"relaxed_overall,none": chartqa},
+                               "mme": {"mme_perception_score,none": 1000.0 + 1000 * gqa}}}, open(d / "x_results.json", "w"))
+
+    write(tmp_path / "t", 0.60, 0.80)
+    write(tmp_path / "s0", 0.50, 0.60)
+    write(tmp_path / "s1", 0.54, 0.64)
+    write(tmp_path / "b", 0.40, 0.10)
+    _run("scripts/aggregate_results.py", "--out", str(tmp_path / "o"), "--reference", "teacher", "--blind", "blind",
+         "--lmms", f"teacher={tmp_path}/t", "--lmms", f"student={tmp_path}/s0,{tmp_path}/s1", "--lmms", f"blind={tmp_path}/b")
+    st = json.load(open(tmp_path / "o" / "tables.json"))["suite"]["models"]
+    gen = st["student"]["categories"]["General"]  # mean of MME (/20) and GQA, per seed, then over seeds
+    assert gen["benchmarks"] == ["mme", "gqa"] and gen["n_seeds"] == 2
+    assert abs(gen["mean"] - np.mean([(75 + 50) / 2, (77 + 54) / 2])) < 1e-9
+    t, s, b = (st[m]["categories"]["OCR & Chart"]["mean"] for m in ("teacher", "student", "blind"))
+    assert abs(st["student"]["categories"]["OCR & Chart"]["visual_retention"] - (s - b) / (t - b)) < 1e-9
+    assert "General" in (tmp_path / "o" / "tables.tex").read_text()

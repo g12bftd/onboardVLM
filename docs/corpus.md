@@ -3,20 +3,23 @@
 Feature distillation is label-free: the student learns the teacher's function only on the images
 it is shown. What the student keeps of the Gemma 4 encoder's general ability is therefore decided by
 the image distribution of the corpus. OVLM-GV is built to cover that distribution along seven axes,
-using only public, versioned sources, with every preprocessing step scripted and logged.
+using only public, versioned sources, with every preprocessing step scripted and logged. It is
+general-purpose by design: the goal is to keep Gemma 4's general vision-language abilities, so the
+default mixture has no application domain and no benchmark images. Egocentric frames and benchmark
+train images are an opt-in ablation (`data_module=general_vision_plus`, weights in its YAML).
 
 | group | source (directory under `$CORPUS_ROOT`) | covers | images (raw) | licence / access | weight | precedent |
 |---|---|---|---:|---|---:|---|
-| web | CC12M, pixparse snapshot (`cc12m`) | open-vocabulary web photos, illustrations, products | 10,968,539 | CC12M terms; HF, open | 0.33 | MobileCLIP (DataCompDR), CLIP-KD |
-| objects | ImageNet-1k train (`imagenet1k`; `objects_source`) | 1,000 object categories, object-centric photos | 1,281,167 | ImageNet terms (non-commercial research); HF, gated (auto-approved) | 0.12 | DeiT, TinyViT (ImageNet distillation) |
-| scenes | Open Images V7, box-annotated train subset (`openimages`) | cluttered multi-object scenes, spatial layout | 1,743,042 | images CC BY 2.0, annotations CC BY 4.0; S3, open | 0.10 | |
-| scenes | SA-1B, first 100 of 1,000 tars (`sa1b`) | high-resolution dense scenes | ~1.1M | SA-1B Research License; form | 0.08 | EfficientSAM / MobileSAM |
-| text-rich | PixMo-Docs (`text_rich/pixmo_docs`) | charts, tables, diagrams, documents | 255,261 | ODC-BY 1.0; HF, open | 0.06 | Molmo |
-| text-rich | SynthDoG-en (`text_rich/synthdog_en`) | dense rendered text | 500,000 | MIT; HF, open | 0.03 | Donut |
-| text-rich | The Cauldron, 13 document / chart / scene-text / UI subsets (`text_rich/cauldron/*`) | real documents, infographics, scene text, screenshots | ~0.4M (4 synthetic subsets capped at 50k) | per subset; HF, open | 0.08 | Idefics2 |
-| egocentric | Ego4D v2 `video_540ss`, ~1,000 h scenario-stratified, 0.5 fps (`egocentric/ego4d`) | head-mounted viewpoint, hands, motion blur, indoor/outdoor daily life | ≤1.8M frames | Ego4D licence; signed agreement + AWS keys | 0.14 | |
-| egocentric | EPIC-KITCHENS-100, 0.5 fps (`egocentric/epic_kitchens`) | egocentric manipulation, kitchens | ~0.18M frames | CC BY-NC 4.0; open | 0.03 | |
-| target | VizWiz, TextVQA, EgoBlind **train** splits (`target_train`) | blind-user photos, scene text, smart-glasses video | ~45K | per benchmark | 0.03 | |
+| web | CC12M, pixparse snapshot (`cc12m`) | open-vocabulary web photos, illustrations, products | 10,968,539 | CC12M terms; HF, open | 0.41 | MobileCLIP (DataCompDR), CLIP-KD |
+| objects | ImageNet-1k train (`imagenet1k`; `objects_source`) | 1,000 object categories, object-centric photos | 1,281,167 | ImageNet terms (non-commercial research); HF, gated (auto-approved) | 0.15 | DeiT, TinyViT (ImageNet distillation) |
+| scenes | Open Images V7, box-annotated train subset (`openimages`) | cluttered multi-object scenes, spatial layout | 1,743,042 | images CC BY 2.0, annotations CC BY 4.0; S3, open | 0.125 | |
+| scenes | SA-1B, first 100 of 1,000 tars (`sa1b`) | high-resolution dense scenes | ~1.1M | SA-1B Research License; form | 0.10 | EfficientSAM / MobileSAM |
+| text-rich | PixMo-Docs (`text_rich/pixmo_docs`) | charts, tables, diagrams, documents | 255,261 | ODC-BY 1.0; HF, open | 0.075 | Molmo |
+| text-rich | SynthDoG-en (`text_rich/synthdog_en`) | dense rendered text | 500,000 | MIT; HF, open | 0.04 | Donut |
+| text-rich | The Cauldron, 13 document / chart / scene-text / UI subsets (`text_rich/cauldron/*`) | real documents, infographics, scene text, screenshots | ~0.4M (4 synthetic subsets capped at 50k) | per subset; HF, open | 0.10 | Idefics2 |
+| egocentric | Ego4D v2 `video_540ss`, ~1,000 h scenario-stratified, 0.5 fps (`egocentric/ego4d`) | head-mounted viewpoint, hands, motion blur, indoor/outdoor daily life | ≤1.8M frames | Ego4D licence; signed agreement + AWS keys | ablation only | |
+| egocentric | EPIC-KITCHENS-100, 0.5 fps (`egocentric/epic_kitchens`) | egocentric manipulation, kitchens | ~0.18M frames | CC BY-NC 4.0; open | ablation only | |
+| target | VizWiz, TextVQA, EgoBlind **train** splits (`target_train`) | blind-user photos, scene text, smart-glasses video | ~45K | per benchmark | ablation only | |
 
 The weights are the sampling probabilities in `config/data_module/general_vision.yaml`
 (`data_module.mixture`). After filtering, decontamination and de-duplication, the exact counts are
@@ -26,7 +29,7 @@ paper, not the raw ones above.
 ## Why ImageNet-1k rather than ImageNet-21k
 
 The objects group adds clean, object-centric photos with fine-grained categories (breeds, species,
-artefacts) to the web, scene, text and egocentric data. ImageNet-1k is the default
+artefacts) to the web, scene and text data. ImageNet-1k is the default
 (`objects_source: imagenet1k`):
 
 * **No extra download.** The E2 probes need the same 154 GB of ImageNet-1k train tars anyway;
@@ -38,7 +41,7 @@ artefacts) to the web, scene, text and egocentric data. ImageNet-1k is the defau
 * **No leakage.** ImageNet-1k val is an evaluation set (E1, E2) and is blocklisted from the corpus;
   only train images enter it.
 
-Its weight is lower than the 21k variant's (0.12 instead of 0.20, with CC12M at 0.33). That keeps
+Its weight is lower than the 21k variant's (0.15 instead of 0.20, with CC12M at 0.41). That keeps
 repetition at ~6 passes, comparable to the other components. Whether the objects group matters at
 all is measured by the leave-one-group-out ablation (`sweeps/corpus_mixture`). Switching to
 ImageNet-21k is one setting: `objects_source=imagenet21k` (download and build it first; the weights
@@ -46,13 +49,14 @@ for that variant are in `general_vision.yaml`).
 
 ## Why this corpus is defensible
 
-* **Coverage, not just scale.** Each group exists because a capability of the teacher, and of the
-  target benchmarks, needs it:
-  * web and object-centric images: recognition (VizWiz "what is this");
-  * multi-object and high-resolution scenes: counting and spatial relations (CV-Bench), plus detail
-    at large token budgets;
-  * text-rich images: OCR (TextVQA, EgoTextVQA);
-  * egocentric frames: the smart-glasses viewpoint (WearVQA, EgoBlind, EgoSchema).
+* **Coverage, not just scale.** Each group exists because a general capability of the teacher, as
+  the Cambrian-1 categories probe it ([protocol.md](protocol.md), E3), needs it:
+  * web and object-centric images: recognition and world knowledge (General, Knowledge: MME, SEED,
+    GQA, MMMU);
+  * multi-object and high-resolution scenes: counting, spatial relations, depth order and detail at
+    large token budgets (Vision-Centric: CV-Bench, MMVP, RealWorldQA; POPE);
+  * text-rich images: documents, charts, diagrams and scene text (OCR & Chart: DocVQA, ChartQA,
+    OCRBench, TextVQA; AI2D).
 
   Each group can be removed in a leave-one-group-out ablation
   (`+experiment=sweeps/corpus_mixture`), so its contribution is measured, not assumed.
@@ -60,7 +64,7 @@ for that variant are in `general_vision.yaml`).
   * ImageNet: DeiT (ImageNet-1k), TinyViT (ImageNet-1k / 21k).
   * CC12M / DataComp-style web data: MobileCLIP and RADIO.
   * SA-1B: EfficientSAM and MobileSAM.
-  * Ego4D: the standard egocentric pre-training source.
+  * Ego4D (ablation only): the standard egocentric pre-training source.
 * **Reproducible.** All sources are fixed snapshots: wds tars, parquet files, S3 tars and versioned
   video sets. No URL lists are re-scraped. LAION is excluded: it was withdrawn after CSAM reports, and
   Re-LAION would be one more URL-scraped set. DataComp-12M is excluded because it ships URLs only, so
@@ -288,13 +292,13 @@ python -u run_distill.py -m +experiment=sweeps/corpus_mixture                   
   passes over its images that means. With the default 30 × 2M draws:
   * web and scenes: 2–4 passes;
   * objects (ImageNet-1k): ~6 passes;
-  * text-rich and egocentric: 4–14 passes;
-  * target train splits: ~40 passes.
+  * text-rich: 4–14 passes.
 
   Every pass is a new random crop at a sampled token budget. Following "a good teacher is patient
-  and consistent" (Beyer et al., 2022), teacher and student always see the same augmented view.
-* **Validation** (`val`): one dataloader per (group, budget) for the groups web, objects, scenes,
-  text-rich, egocentric and target (official VizWiz val), at `val_budgets` (70, 280, 1120).
+  and consistent" (Beyer et al., 2022), teacher and student always see the same augmented view,
+  also under mixup (`data_module.collator.mixup_alpha`, [methods.md](methods.md)).
+* **Validation** (`val`): one dataloader per (group, budget) for the groups web, objects, scenes and
+  text-rich (corpus val split only), at `val_budgets` (70, 280, 1120).
   Images are batched by exact processor shape. Metrics are logged as `val/<group>/b<budget>/fid_lm_cos`,
   `val/<group>/...`, `val/b<budget>/...` and overall `val/...` (image-weighted). Checkpoints are
   selected on `val/fid_lm_cos` (docs/protocol.md).
@@ -306,8 +310,9 @@ python -u run_distill.py -m +experiment=sweeps/corpus_mixture                   
 
 | change | override |
 |---|---|
-| drop one source | `data_module.mixture.ego4d=0` |
-| drop a group | `data_module.drop_groups=[egocentric]` (all groups: `+experiment=sweeps/corpus_mixture`) |
+| drop one source | `data_module.mixture.sa1b=0` |
+| drop a group | `data_module.drop_groups=[text_rich]` (all groups: `+experiment=sweeps/corpus_mixture`) |
+| add application-domain data (egocentric frames, benchmark train images) | `data_module=general_vision_plus` |
 | reweight | `data_module.mixture.cc12m=0.4 data_module.mixture.objects=0.05` |
 | ImageNet-21k as the objects source | `objects_source=imagenet21k data_module.mixture.objects=0.20 data_module.mixture.cc12m=0.25` (after `download:imagenet21k corpus:imagenet21k`) |
 | bigger val split | `corpus_split.val_fraction=0.005` |

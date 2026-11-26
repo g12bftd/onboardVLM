@@ -1,7 +1,9 @@
 # Experimental protocol
 
 This is the protocol the code implements, written as it would appear in a paper's experimental
-section and appendix.
+section and appendix. The goal is general-purpose: compress the vision encoder while keeping Gemma 4's general
+vision-language abilities, so training data, model selection and the headline evaluation are all general-domain.
+The distillation methods compared are in [methods.md](methods.md).
 
 ## 1. Claims and the evidence for each
 
@@ -9,7 +11,8 @@ section and appendix.
 |---|---|---|
 | the student reproduces the teacher's vision tokens | E1 fidelity, in the language model's input space, per budget, aspect ratio and image group | `run_fidelity.py` |
 | the student keeps the teacher's general visual representation | E2 frozen-feature probes (classification, segmentation, depth) against prior efficient encoders | `run_probe.py` |
-| the VLM with the student keeps its abilities | E3 downstream: target benchmarks plus the lmms-eval general suite, teacher vs student in the unchanged Gemma 4 | `run_eval.py`, `run_lmms_eval.py` |
+| the VLM with the student keeps its general abilities | E3: the Cambrian-1 suite (16 benchmarks, 4 categories) + POPE, MMStar, InfoVQA, teacher vs student in the unchanged Gemma 4, with a blind (no-image) floor | `run_lmms_eval.py` (`onboard_vlm/eval/suites.py`) |
+| which distillation ingredient matters (function matching, manifold distillation, intermediate layers, weight multiplexing) | literature studies at one student, data stream and compute | `+experiment=lit/base`, [methods.md](methods.md) |
 | the student is what makes this possible, not other choices | same-LM baselines at equal training compute (§5) | `config/experiment/baselines/` |
 | it is efficient on device | params, MACs per budget, latency, memory | `run_profile.py` |
 
@@ -53,8 +56,9 @@ student is trained on and claimed on: every processor output for source aspect r
 
 ## 4. Training
 
-**Data.** OVLM-GV ([corpus.md](corpus.md)): 6 groups and ~18M raw images, decontaminated against
-every evaluation image (§7) and de-duplicated. Train/val/test splits are a seeded content hash
+**Data.** OVLM-GV ([corpus.md](corpus.md)): web, objects, scenes and text-rich images (~16M raw), decontaminated
+against every evaluation image (§7) and de-duplicated. No application domain and no benchmark training images are
+in the default mixture (egocentric frames and benchmark train images: the `general_vision_plus` ablation). Train/val/test splits are a seeded content hash
 assigned by the loader (`corpus_split`: 0.2% val, 0.2% test).
 
 **Batches** (`BucketedBatchSampler`):
@@ -68,7 +72,8 @@ assigned by the loader (`corpus_split`: 0.2% val, 0.2% test).
   ends.
 * Aspect ratio: 50% camera aspects, 50% log-uniform over the domain. Each image is randomly cropped
   to the batch's aspect ratio (area 35–100% of the largest such crop) and resized with the
-  processor's resize. Teacher and student always see the same pixels.
+  processor's resize. Teacher and student always see the same pixels, also under mixup
+  (`data_module.collator.mixup_alpha`, function matching, [methods.md](methods.md)).
 * Every rank builds the same plan and takes its share; all samplers handle DDP themselves.
 
 **Optimisation.** AdamW, linear warmup, cosine decay. Configs are in `config/task/*.yaml`.
@@ -81,8 +86,9 @@ assigned by the loader (`corpus_split`: 0.2% val, 0.2% test).
 
 Runs that are compared must have equal soft tokens seen (`tokens_per_batch` × steps).
 
-**Model selection.** Only on the validation split: the corpus val split per group, plus the
-official VizWiz val, at budgets {70, 280, 1120}. All three types select on the same metric:
+**Model selection.** Only on the validation split: the corpus val split per group, at budgets
+{70, 280, 1120}. Hyperparameters of the literature studies (the manifold-loss scale) are chosen on held-out
+fidelity and ImageNet k-NN, never on E3. All three types select on the same metric:
 `val/fid_lm_cos`, the image-weighted LM-input-space cosine. Test splits are evaluated once, after
 training (`final_test`).
 
@@ -98,8 +104,7 @@ Logit distillation of seed *s* starts from the embedding export of seed *s*.
 
 * the original VLM answers greedily at 280 tokens;
 * prompts are six image-agnostic templates over corpus train images (caption, detailed caption,
-  OCR, spatial layout, assistive description, salient content), plus the VizWiz and TextVQA train
-  questions;
+  OCR, spatial layout, reasoning, salient content); no benchmark questions;
 * the cache stores the exact prompt, the response and its provenance (revision, budget, generation
   settings);
 * validation responses come from corpus val images;
@@ -125,7 +130,7 @@ Logit distillation of seed *s* starts from the embedding export of seed *s*.
   * in-distribution: the corpus test split per group;
   * held out: COCO val2017, ADE20K val, ImageNet-1k val, DocVQA val, InfographicVQA val,
     ChartQA test, RealWorldQA;
-  * target: VizWiz val, TextVQA val, WearVQA, CV-Bench, EgoSchema frames.
+  * the images of general benchmarks: GQA test-dev (5,000), TextVQA val, MMVP (fidelity ↔ accuracy).
 * Metrics (`onboard_vlm/distill/fidelity.py`, identical to the training-time validation metrics):
   * primary: LM-input-space cosine and relative error;
   * also: vision-space cosine, per-image CKA of the RMS-normalised token sets, and the 5th-percentile
@@ -144,26 +149,44 @@ and HF vision towers:
 Gemma-family encoders are probed at the 280-token budget; external encoders at their native
 resolution.
 
-**E3 — downstream**, with the student grafted into the unchanged Gemma 4.
+**E3 — general vision-language abilities**, with the student grafted into the unchanged Gemma 4
+(`onboard_vlm/eval/suites.py`, `scripts/eval_general.sh`, `scripts/trajectory_eval.py --evals ...,lmms`).
 
-* Target benchmarks (`run_eval.py`, official metrics and judges): VizWiz-VQA, TextVQA, WearVQA,
-  EgoBlind, EgoTextVQA (outdoor high/low, indoor), EgoSchema, CV-Bench.
-* General suite (`scripts/eval_general.sh`, lmms-eval 0.7.4's own `gemma4` model subclassed, so
-  prompts and scoring match published Gemma 4 numbers):
+* Protocol: Cambrian-1 (Tong et al., NeurIPS 2024), the standard comparison of vision encoders inside one VLM:
+  16 benchmarks in four categories, reported per benchmark, per category (mean) and overall (mean of the four
+  categories' benchmarks). Our setting is stricter than theirs: nothing but the encoder changes (no connector or LLM
+  re-training).
 
-  | area | benchmarks |
+  | category | benchmarks (lmms-eval task, headline metric) |
   |---|---|
-  | perception and hallucination | POPE, MMVP, HallusionBench |
-  | general | MMBench-EN, MMStar, SEED-Bench, RealWorldQA |
-  | OCR and documents | OCRBench, DocVQA, ChartQA, InfoVQA, AI2D |
-  | spatial | BLINK, CV-Bench |
-  | control | MMMU |
-  | video, at 70 tokens per frame | Video-MME, MVBench |
+  | General | MME perception (/20), MMBench-EN dev*, SEED-Bench image, GQA test-dev |
+  | Knowledge | ScienceQA-IMG, MMMU val, MathVista testmini*, AI2D |
+  | OCR & Chart | ChartQA (relaxed), OCRBench, TextVQA val, DocVQA val (ANLS) |
+  | Vision-Centric | MMVP (pair accuracy), RealWorldQA, CV-Bench 2D, CV-Bench 3D |
+  | added | POPE (F1, object hallucination), MMStar (vision-indispensable by construction), InfoVQA val (ANLS) |
 
+  \* scored by a GPT judge in lmms-eval: left out by default (`JUDGED=1` / `--judged` adds them); category means
+  say which benchmarks they contain. Every other score is rule-based and deterministic.
+* lmms-eval 0.7.4, its own `gemma4` model subclassed (prompts, generation and scoring as published for Gemma 4),
+  280 soft tokens, greedy decoding; video (Video-MME, MVBench at 70 tokens per frame) with `VIDEO=1`.
+* **Blind control**: the teacher with every image replaced by a grey image of the same size (`BLIND=1`). It
+  measures what the language model answers without seeing. Two summaries per model:
+  * retention `s / t` (student over teacher);
+  * visual retention `(s − b) / (t − b)`: the share of the teacher's *visual* advantage over the blind floor the
+    student keeps. Benchmarks the LM answers well blind cannot inflate it.
+* Every number is the mean ± std over three training seeds. Paired student–teacher differences use the per-item
+  scores (`--log_samples`; ANLS recomputed per item for DocVQA / InfoVQA) with the hierarchical seed × item
+  bootstrap and McNemar for binary scores, Holm-corrected over the suite (§7).
+* Over training (`scripts/trajectory_eval.py`): TextVQA val and CV-Bench (500 seeded items each) at every export;
+  the full suite on the last export (`--lmms_steps`).
+* Application benchmarks stay available as a secondary check, not a selection criterion: VizWiz-VQA, WearVQA,
+  EgoSchema (`run_eval.py benchmark=...`).
 * Every student is evaluated in **both** E2B and E4B.
 
-**Efficiency** (`run_profile.py`): params, MACs and peak activation memory at every budget for a
-1440×1080 frame; latency on the target device.
+**Efficiency** (`run_profile.py`): params (shared weights counted once, so weight multiplexing lowers params but
+not MACs), MACs and peak activation memory at every budget for a 1440×1080 frame; latency with
+`latency_iters=50` (median after warm-up) on the cluster GPU and, for the paper's deployment claim, on the target
+device.
 
 ## 7. Statistics and data hygiene
 
@@ -220,6 +243,11 @@ figure) and `scripts/aggregate_results.py` (`tables.tex` with booktabs, `tables.
 | E2B vs E4B embedding space | `embedding/gemma4_vit_l8_d384_{e2b,e4b}`, each evaluated in both VLMs |
 | split variance | `corpus_split.split_seed=1,2` |
 | ImageNet-1k vs ImageNet-21k as the objects source | `objects_source=imagenet21k` (weights in `general_vision.yaml`) |
+| application-domain data (egocentric frames, benchmark train images) | `data_module=general_vision_plus` |
+| (1) function matching, with / without mixup | `+experiment=lit/base objective=fm data_module.collator.mixup_alpha={1.0,0.0}` |
+| (2) manifold distillation on output tokens | `objective={md,fm_md}`, scale chosen by `--study md_scale` |
+| (3) (1) or (2) on intermediate layers | `objective={fm_fmL,fm_mdL}` |
+| (4) weight multiplexing | `student.share_every=2 student.share_transform={none,linear,dwconv}` |
 
 ## 9. Run order
 
@@ -228,24 +256,33 @@ figure) and `scripts/aggregate_results.py` (`tables.tex` with booktabs, `tables.
 3. Corpus: `make_datasets/download/corpus/download_corpus_all.sh`, then `bash make_datasets/build_corpus.sh` (blocklist → sources → finalize).
 4. Main method, three seeds: `python -u run_distill.py -m +experiment=embedding/gemma4_vit_l8_d384_e2b seed=0,1,2`.
 5. Optional stage 2: `python -u run_generate_targets.py` (train), then `split_name=val 'sources=${val_sources}'`, then `python -u run_distill.py -m +experiment=logit/gemma4_vit_l8_d384_e2b seed=0,1,2`.
-6. Baselines and ablations (§5, §8), at equal compute.
+6. Baselines and ablations (§5, §8), at equal compute; the literature studies with
+   `scripts/slurm/submit_shrink_study.sh --study {md_scale,objective,multiplex}` ([methods.md](methods.md)).
 7. Evaluation:
    * E1: `run_fidelity.py`;
    * E2: `run_probe.py`;
-   * E3: `run_eval.py -m benchmark=...` and `scripts/eval_general.sh`, for the teacher and every student, in E2B and E4B.
-8. Tables: `python scripts/aggregate_results.py --reference teacher ...`.
+   * E3: `scripts/eval_general.sh` (and `BLIND=1` once for the teacher), for the teacher and every student, in E2B and E4B.
+8. Tables: `python scripts/aggregate_results.py --reference teacher --blind blind --lmms teacher=... --lmms blind=... --lmms <model>=<dir per seed> ...`.
 
 ## 10. Limitations and what is not verified here
 
 * Nothing has been run at scale in this repository: no real corpus, no real-weight training, no
-  benchmark numbers. The pipeline is covered by 255 offline tests and CPU dry runs with a tiny
+  benchmark numbers. The pipeline is covered by 301 offline tests and CPU dry runs with a tiny
   random Gemma 4.
 * The lmms-eval bridge is written against lmms-eval 0.7.4's `gemma4` model and registry API, read
   from its source. It has not been run end to end.
 * The E1 dataset repos and parquet columns were checked on the Hugging Face Hub. The COCO and
   ADE20K archive URLs are the official ones but were not downloaded here.
-* lmms-eval per-sample scores for paired tests are parsed heuristically (`aggregate_results.py`).
-  Check them against lmms-eval's aggregate numbers.
+* lmms-eval per-sample scores for paired tests are parsed heuristically (`onboard_vlm/eval/suites.item_score`;
+  MMMU open questions and MMVP pairs are approximations). Check them against lmms-eval's aggregate numbers.
+  Headline numbers always come from lmms-eval's own aggregates.
+* The lmms-eval task names of the suite (`suites.CATEGORIES`) follow lmms-eval 0.7.4's registry; `lmms-eval
+  --tasks list` on the cluster confirms them before the first full run.
+* The manifold-distillation weights (α, β, γ, K) and its reduction default to 1, 1, 1, 256 and the entry mean; the
+  values in Hao et al.'s implementation details could not be checked from the development environment. The scale is
+  chosen by the `md_scale` study (held-out data) in any case.
+* Weight multiplexing follows MiniViT's design (shared attention + MLP, unshared norms, an identity-initialised
+  per-layer transformation) inside the Gemma 4 layer; it is not MiniViT's exact Swin / DeiT code.
 * The E2 probes follow standard linear-probe protocols, but absolute numbers are not directly
   comparable to papers that use full ImageNet training sets or other resolutions. Compare encoders
   only within this protocol.

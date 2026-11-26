@@ -39,10 +39,13 @@ import json
 import math
 import os
 import re
+import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # onboard_vlm without an install
 
 # validated palettes (dataviz validator): 5-step ordinal blue ramp, 4 categorical slots in fixed order
 RAMP = ["#84b9f3", "#519ced", "#257de0", "#1b64be", "#0f4a96"]
@@ -55,10 +58,17 @@ TRAIN_PANELS = [("train/total", "training loss (total)"), ("diag/grad_norm", "gr
                 ("diag/grad_clipped", "fraction of steps clipped"), ("diag/update_ratio", "update ratio ||dθ|| / ||θ||"),
                 ("lr", "learning rate"), ("diag/images_per_s", "throughput (images / s)")]
 
-NAME = re.compile(r"shrink_L(?P<L>\d+)_D(?P<D>\d+)_(?P<init>[a-z]+)_(?P<ls>[^-]+)-(?P<ws>.+)$")
+NAMES = [  # experiment names of the studies -> label fields
+    re.compile(r"shrink_L(?P<L>\d+)_D(?P<D>\d+)_(?P<init>[a-z]+)_(?P<ls>[^-]+)-(?P<ws>.+)$"),       # shrink/base
+    re.compile(r"lit_(?P<obj>[A-Za-z_]+?)(?:_w(?P<w>[\d.e+-]+))?_mx(?P<mx>[\d.]+)_L(?P<L>\d+)_D(?P<D>\d+)"
+               r"_x(?P<k>\d+)-(?P<tr>[a-z]+)$"),                                                       # lit/base
+]
 SEED = re.compile(r"_(?P<tag>s\d+(?:_i\d+_d\d+)?)$")
-E3 = {"vizwiz_vqa": ("vqa_accuracy", "VizWiz val (VQA acc.)"), "textvqa": ("vqa_accuracy", "TextVQA val (VQA acc.)"),
-      "cvbench": ("cv_bench_overall", "CV-Bench (overall)"), "egoschema_subset": ("accuracy", "EgoSchema subset (acc.)")}
+E3 = {"textvqa": ("vqa_accuracy", "TextVQA val (VQA acc.)"), "cvbench": ("cv_bench_overall", "CV-Bench (overall)"),
+      "vizwiz_vqa": ("vqa_accuracy", "VizWiz val (VQA acc.)"), "egoschema_subset": ("accuracy", "EgoSchema subset (acc.)")}
+LMMS = {"lmms/overall": "general suite: overall (16 benchmarks)", "lmms/General": "general suite: General",
+        "lmms/Knowledge": "general suite: Knowledge", "lmms/OCR & Chart": "general suite: OCR & Chart",
+        "lmms/Vision-Centric": "general suite: Vision-Centric", "lmms/Hallucination & vision-indispensable": "POPE + MMStar"}
 NICE = {"e2/imagenet/knn_top1": "ImageNet k-NN top-1", "e2/imagenet/linear_top1": "ImageNet linear top-1",
         "e2/nyuv2/rmse": "NYUv2 depth RMSE (lower is better)", "e2/nyuv2/absrel": "NYUv2 depth AbsRel (lower is better)",
         "e2/nyuv2/delta1": "NYUv2 depth delta1", "e2/ade20k/pixel_acc": "ADE20K pixel accuracy"}
@@ -135,7 +145,32 @@ def load_evals(d: str) -> dict:
                 v = json.load(f).get(key)
             if isinstance(v, (int, float)):
                 out[f"e3/{b}"] = float(v)
+    lm = os.path.join(d, "eval", "lmms")
+    if os.path.isdir(lm):  # the general suite (lmms-eval, 0-100): per task, per category and overall
+        from onboard_vlm.eval.suites import headlines, summarize
+
+        heads = headlines(lm)
+        out.update({f"lmms/{t}": v for t, v in heads.items()})
+        out.update({f"lmms/{c}": v for c, v in summarize(heads).items()})
     return out
+
+
+
+
+def _num(v: str):
+    try:
+        return int(v)
+    except ValueError:
+        try:
+            return float(v)
+        except ValueError:
+            return v
+
+
+def present(runs: list[Run], keys: list[tuple[str, str]], teacher: dict | None = None) -> list[tuple[str, str]]:
+    """The ``(key, title)`` panels that some run (or the teacher) has a value for."""
+    have = {k for r in runs for p in r.points for k in p} | set(teacher or {})
+    return [(k, t) for k, t in keys if k in have]
 
 
 def find_runs(root: str, patterns: list[str], tag: str) -> list[Run]:
@@ -148,8 +183,8 @@ def find_runs(root: str, patterns: list[str], tag: str) -> list[Run]:
         config = rid[: m.start()]
         if not any(fnmatch.fnmatch(config, p) for p in patterns):
             continue
-        nm = NAME.match(config)
-        fields = {k: (int(v) if v.isdigit() else v) for k, v in nm.groupdict().items()} if nm else {}
+        nm = next((m for rx in NAMES if (m := rx.match(config))), None)
+        fields = {k: _num(v) for k, v in nm.groupdict().items() if v is not None} if nm else {}
         mc = os.path.join(root, "logs", tag, rid, "metrics.csv")
         run = Run(rid, config, fields, traj, mc if os.path.isfile(mc) else None)
         if run.metrics_csv:
@@ -160,6 +195,11 @@ def find_runs(root: str, patterns: list[str], tag: str) -> list[Run]:
 
 
 def params_of(run: Run) -> float | None:
+    """Unique student parameters (shared weights counted once): student_stats.json, else the tensors stored."""
+    stats = sorted(glob.glob(os.path.join(run.traj, "step_*", "student_stats.json")))
+    if stats:
+        with open(stats[-1]) as f:
+            return float(json.load(f)["parameters"])
     steps = sorted(glob.glob(os.path.join(run.traj, "step_*", "student.safetensors")))
     if not steps:
         return None
@@ -229,15 +269,15 @@ def panel_figure(path: str, panels: list[tuple[str, str]], groups, keys, colors,
     """Small multiples: one panel per metric; thin seed lines, bold seed mean, dashed teacher reference."""
     import matplotlib.pyplot as plt
 
-    present = [(k, t) for k, t in panels if any(get(r, k) is not None for lab in keys for r in groups[lab])]
-    if not present:
+    shown = [(k, t) for k, t in panels if any(get(r, k) is not None for lab in keys for r in groups[lab])]
+    if not shown:
         return
-    n = len(present)
+    n = len(shown)
     cols = min(3, n)
     rows = math.ceil(n / cols)
     fig, axes = plt.subplots(rows, cols, figsize=(PAPER["width"], PAPER["width"] / cols * 0.72 * rows + 0.45), squeeze=False)
     table = []
-    for ax, (key, title) in zip(axes.flat, present):
+    for ax, (key, title) in zip(axes.flat, shown):
         ends: list[tuple[str, float, float]] = []
         for lab in keys:
             seeds = [c for r in groups[lab] if (c := get(r, key)) is not None]
@@ -259,7 +299,7 @@ def panel_figure(path: str, panels: list[tuple[str, str]], groups, keys, colors,
         direct_labels(ax, ends)
     for ax in list(axes.flat)[n:]:
         ax.set_visible(False)
-    legend(fig, colors, teacher_ref is not None and any(teacher_ref(k) is not None for k, _ in present))
+    legend(fig, colors, teacher_ref is not None and any(teacher_ref(k) is not None for k, _ in shown))
     fig.tight_layout(rect=(0, 0, 1, 0.92))
     save(fig, path, table)
 
@@ -334,14 +374,14 @@ def final_vs_params(path: str, groups, keys, colors, metrics: list[tuple[str, st
     params = {lab: params_of(groups[lab][0]) for lab in keys}
     if len({p for p in params.values() if p}) < 2:
         return
-    present = [(k, t) for k, t in metrics if any(final_value(r, k) is not None for lab in keys for r in groups[lab])]
-    if not present:
+    shown = [(k, t) for k, t in metrics if any(final_value(r, k) is not None for lab in keys for r in groups[lab])]
+    if not shown:
         return
-    cols = min(3, len(present))
-    rows = math.ceil(len(present) / cols)
+    cols = min(3, len(shown))
+    rows = math.ceil(len(shown) / cols)
     fig, axes = plt.subplots(rows, cols, figsize=(PAPER["width"], PAPER["width"] / cols * 0.75 * rows + 0.45), squeeze=False)
     table = []
-    for ax, (key, title) in zip(axes.flat, present):
+    for ax, (key, title) in zip(axes.flat, shown):
         xs, ys = [], []
         for lab in keys:
             vals = [v for r in groups[lab] if (v := final_value(r, key)) is not None]
@@ -366,7 +406,7 @@ def final_vs_params(path: str, groups, keys, colors, metrics: list[tuple[str, st
         ax.xaxis.set_minor_formatter(plain)
         ax.tick_params(axis="x", which="both", labelsize=PAPER["tick"], colors=TEXT2)
         style(ax, title, "student parameters (M, log)")
-    for ax in list(axes.flat)[len(present):]:
+    for ax in list(axes.flat)[len(shown):]:
         ax.set_visible(False)
     legend(fig, colors, bool(teacher))
     fig.tight_layout(rect=(0, 0, 1, 0.92))
@@ -418,14 +458,14 @@ def spearman(x: np.ndarray, y: np.ndarray) -> float:
 def fidelity_vs_downstream(path: str, runs: list[Run], fid_key: str, n_boot: int = 2000) -> None:
     import matplotlib.pyplot as plt
 
-    targets = [(f"e3/{b}", t) for b, (_, t) in E3.items()]
-    present = [(k, t) for k, t in targets if any(fid_key in p and k in p for r in runs for p in r.points)]
-    if not present:
+    targets = [(f"e3/{b}", t) for b, (_, t) in E3.items()] + list(LMMS.items())
+    have = [(k, t) for k, t in targets if sum(1 for r in runs for p in r.points if fid_key in p and k in p) >= 3]
+    if not have:
         return
-    fig, axes = plt.subplots(1, len(present), figsize=(PAPER["width"], PAPER["width"] / max(len(present), 2) * 0.85 + 0.35), squeeze=False)
+    fig, axes = plt.subplots(1, len(have), figsize=(PAPER["width"], PAPER["width"] / max(len(have), 2) * 0.85 + 0.35), squeeze=False)
     table = []
     rng = np.random.default_rng(0)
-    for ax, (key, title) in zip(axes.flat, present):
+    for ax, (key, title) in zip(axes.flat, have):
         per_run = [[(p[fid_key], p[key]) for p in r.points if fid_key in p and key in p] for r in runs]
         per_run = [pr for pr in per_run if pr]
         pts = np.array([q for pr in per_run for q in pr])
@@ -449,7 +489,8 @@ def main() -> None:
     p.add_argument("--root", required=True, help="output_root of the runs ($ONBOARD_VLM_OUT)")
     p.add_argument("--runs", nargs="+", required=True, help="experiment-name globs (all seeds of each are used)")
     p.add_argument("--out", required=True)
-    p.add_argument("--label", default="{L} layers x {D}", help="series label, from the fields L, D, init, ls, ws of the name")
+    p.add_argument("--label", default="{L} layers x {D}", help="series label from the fields of the name: L, D, init, ls, ws "
+                   "(shrink_*) or obj, w, mx, L, D, k, tr (lit_*)")
     p.add_argument("--order", default=None, help="numeric field that orders the series (one hue, light -> dark)")
     p.add_argument("--teacher_dir", default=None, help="trajectory_eval.py --teacher output (reference lines)")
     p.add_argument("--tag", default="onboard_vlm", help="logger name (config `tag`)")
@@ -471,9 +512,11 @@ def main() -> None:
     print(f"[plot_study] {len(runs)} runs in {len(keys)} series: " + ", ".join(f"{k} ({len(groups[k])} seeds)" for k in keys))
     teacher = load_evals(a.teacher_dir) if a.teacher_dir else {}
     tref = (lambda k: teacher.get(k)) if teacher else None
+    E3_PANELS = present(runs, [(f"e3/{b}", t) for b, (_, t) in E3.items()], teacher)
+    LMMS_PANELS = present(runs, list(LMMS.items()), teacher)
     fk = f"e1/ood/b{a.fidelity_budget}/lm_cos"
     heat = [("val/fid_lm_cos", "val LM-space cosine"), ("val/fid_lm_mse", "val LM-space MSE"), (fk, "held-out LM-space cosine"),
-            ("e2/imagenet/knn_top1", "ImageNet k-NN top-1"), *[(f"e3/{b}", t) for b, (_, t) in E3.items()]]
+            ("e2/imagenet/knn_top1", "ImageNet k-NN top-1"), *E3_PANELS, *LMMS.items()]
     for key, title in heat:  # depth x width grids (only when both vary)
         grid_heatmap(os.path.join(a.out, "grid_" + re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")), runs, key, title)
     fidelity_vs_downstream(os.path.join(a.out, "fidelity_vs_downstream"), runs, fk)
@@ -499,11 +542,13 @@ def main() -> None:
                  groups, keys, colors, point_getter)
     e2 = sorted({k for r in runs for pt in r.points for k in pt if k.startswith("e2/")})
     panel_figure(os.path.join(a.out, "trajectory_e2"), [(k, NICE.get(k, k[3:].replace("/", " "))) for k in e2], groups, keys, colors, point_getter, tref)
-    panel_figure(os.path.join(a.out, "trajectory_e3"), [(f"e3/{b}", t) for b, (_, t) in E3.items()], groups, keys, colors, point_getter, tref)
+    panel_figure(os.path.join(a.out, "trajectory_e3"), E3_PANELS, groups, keys, colors, point_getter, tref)
+    if LMMS_PANELS:  # the general suite at the exports it was run on (trajectory_eval.py --evals ...,lmms; first and last by default)
+        panel_figure(os.path.join(a.out, "trajectory_general_suite"), LMMS_PANELS, groups, keys, colors, point_getter, tref)
     final_vs_params(os.path.join(a.out, "final_vs_params"), groups, keys, colors,
                     [("val/fid_lm_cos", "val LM-space cosine"), ("val/fid_lm_mse", "val LM-space MSE"), (fk, "held-out LM-space cosine"),
                      *[(k, NICE.get(k, k[3:].replace("/", " "))) for k in e2 if k.endswith(("knn_top1", "linear_top1"))],
-                     *[(f"e3/{b}", t) for b, (_, t) in E3.items()]], teacher, bool(a.order))
+                     *E3_PANELS, *LMMS_PANELS], teacher, bool(a.order))
 
 
 if __name__ == "__main__":

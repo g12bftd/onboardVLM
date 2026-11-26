@@ -1,0 +1,15 @@
+# @package _global_
+# (1) on the output tokens + (3) applied with (2) to intermediate layers, Hao et al.'s own setting: token relations of
+# each mapped hidden layer (the student's own width: relations need no projection head). docs/methods.md.
+objective_name: fm_mdL_w${md.scale}   # the MD scale is part of the run name (md_scale study)
+layer_map: auto
+md: {scale: 1.0, intra: 1.0, inter: 1.0, random: 1.0, num_random: 256, reduction: mean}   # scale x (alpha, beta, gamma), K; docs/methods.md
+criterion:
+  - {name: token_feature, label: fm_mse, weight: 1.0, metric: mse, normalize: none}
+  - {name: token_feature, label: fm_cos, weight: 1.0, metric: cosine}
+task:
+  adapter: {layer_heads: false}
+  vision_criterion:
+    - {name: intermediate_layer, label: mdL_intra, weight: "${md.scale}", mode: manifold, intra: "${md.intra}", inter: 0.0, random: 0.0, reduction: "${md.reduction}"}
+    - {name: intermediate_layer, label: mdL_inter, weight: "${md.scale}", mode: manifold, intra: 0.0, inter: "${md.inter}", random: 0.0, reduction: "${md.reduction}"}
+    - {name: intermediate_layer, label: mdL_random, weight: "${md.scale}", mode: manifold, intra: 0.0, inter: 0.0, random: "${md.random}", num_random: "${md.num_random}", reduction: "${md.reduction}"}

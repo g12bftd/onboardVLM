@@ -35,6 +35,9 @@ class DistillationAdapter(nn.Module):
         teacher_layer_dim: width of teacher intermediate layers (== ``teacher_dim`` for Gemma 4).
         kind: ``"linear"`` or ``"mlp"``.
         force_final / force_layers: add a projection even when widths already match (FitNets-style).
+        layer_heads: False = no intermediate projection heads (``intermediate_tokens`` stay the student's own widths):
+            for objectives that only compare token *relations* at intermediate layers (``manifold``), where unused
+            heads would also break DDP's gradient reduction.
     """
 
     def __init__(
@@ -47,6 +50,7 @@ class DistillationAdapter(nn.Module):
         kind: str = "linear",
         force_final: bool = False,
         force_layers: bool = False,
+        layer_heads: bool = True,
     ):
         super().__init__()
         self.layer_map = {int(k): int(v) for k, v in (layer_map or {}).items()}
@@ -58,7 +62,7 @@ class DistillationAdapter(nn.Module):
         missing = set(self.layer_map) - set(dims)
         if missing:
             raise KeyError(f"student has no layers {sorted(missing)}; available {sorted(dims)}")
-        self.layers = nn.ModuleDict({str(s): _proj(dims[s], teacher_layer_dim, kind, force_layers) for s in self.layer_map})
+        self.layers = nn.ModuleDict({str(s): _proj(dims[s], teacher_layer_dim, kind, force_layers) for s in self.layer_map} if layer_heads else {})
 
     @classmethod
     def from_models(cls, student: nn.Module, teacher: nn.Module, layer_map: Mapping[int, int] | None = None, **kw) -> "DistillationAdapter":
@@ -71,5 +75,8 @@ class DistillationAdapter(nn.Module):
 
     def forward(self, out: StudentVisionOutput) -> StudentVisionOutput:
         """Returns a new output whose ``intermediate_tokens`` are keyed by *teacher* layer index."""
-        inter = {t: self.layers[str(s)](out.intermediate_tokens[s]) for s, t in self.layer_map.items()}
-        return dataclasses.replace(out, tokens=self.final(out.tokens), intermediate_tokens=inter)
+        inter = {t: self.layers[str(s)](out.intermediate_tokens[s]) if str(s) in self.layers else out.intermediate_tokens[s]
+                 for s, t in self.layer_map.items()}
+        raw = {t: out.intermediate_tokens[s] for s, t in self.layer_map.items()}  # unprojected, for relation losses
+        return dataclasses.replace(out, tokens=self.final(out.tokens), intermediate_tokens=inter, raw_tokens=out.tokens,
+                                   raw_intermediate_tokens=raw)

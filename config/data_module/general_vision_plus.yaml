@@ -1,0 +1,28 @@
+# Ablation: the general corpus plus application-domain data: egocentric video frames (Ego4D, EPIC-KITCHENS) and the
+# images of benchmark TRAIN splits (VizWiz, TextVQA, EgoBlind; labels unused). Does domain data help or hurt the
+# general abilities (onboard_vlm/eval/suites.py)?   data_module=general_vision_plus
+defaults:
+  - general_vision@_here_
+  - _self_
+mixture:
+  cc12m: 0.33
+  objects: 0.12
+  openimages: 0.10
+  sa1b: 0.08
+  pixmo_docs: 0.06
+  synthdog_en: 0.03
+  cauldron: 0.08
+  ego4d: 0.14
+  epic_kitchens: 0.03
+  target: 0.03
+train:
+  - {name: image_corpus, root: "${corpus_root}/cc12m", group: web, weight: "${data_module.mixture.cc12m}"}
+  - {name: image_corpus, root: "${corpus_root}/${objects_source}", group: objects, weight: "${data_module.mixture.objects}"}
+  - {name: image_corpus, root: "${corpus_root}/openimages", group: scenes, weight: "${data_module.mixture.openimages}"}
+  - {name: image_corpus, root: "${corpus_root}/sa1b", group: scenes, weight: "${data_module.mixture.sa1b}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/pixmo_docs", group: text_rich, weight: "${data_module.mixture.pixmo_docs}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/synthdog_en", group: text_rich, weight: "${data_module.mixture.synthdog_en}"}
+  - {name: image_corpus, root: "${corpus_root}/text_rich/cauldron/*", group: text_rich, weight: "${data_module.mixture.cauldron}"}
+  - {name: image_corpus, root: "${corpus_root}/egocentric/ego4d", group: egocentric, weight: "${data_module.mixture.ego4d}"}
+  - {name: image_corpus, root: "${corpus_root}/egocentric/epic_kitchens", group: egocentric, weight: "${data_module.mixture.epic_kitchens}"}
+  - {name: target_train, data_root: "${data_root}", group: target, weight: "${data_module.mixture.target}"}

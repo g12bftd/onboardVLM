@@ -16,17 +16,17 @@ _target_: onboard_vlm.data.data_module.DistillDataModule
 dataset_defaults:
   image_corpus: {val_fraction: "${corpus_split.val_fraction}", test_fraction: "${corpus_split.test_fraction}", split_seed: "${corpus_split.split_seed}", require_finalized: true}
 
+# General-purpose by design: the student must keep Gemma 4's general vision-language abilities, so the mixture covers
+# what general VLM benchmarks probe (web photos, objects, scenes, documents / charts / text) and no application
+# domain. Egocentric frames and benchmark train images are an opt-in ablation (data_module=general_vision_plus).
 mixture:                 # sampling probability per component (sums to 1; renormalised if not)
-  cc12m: 0.33            # web, open-vocabulary                       ~10.9M
-  objects: 0.12          # object-centric: ${objects_source} (ImageNet-1k 1.28M, default; ImageNet-21k 13.7M)
-  openimages: 0.10       # multi-object scenes (box-annotated subset)   ~1.7M
-  sa1b: 0.08             # high-resolution dense scenes                 ~1.1M
-  pixmo_docs: 0.06       # text-rich: charts / tables / diagrams        ~0.26M
-  synthdog_en: 0.03      # text-rich: synthetic documents               ~0.5M
-  cauldron: 0.08         # text-rich: docs / charts / scene text / UI   ~0.4M
-  ego4d: 0.14            # egocentric video frames                      ~1.5M
-  epic_kitchens: 0.03    # egocentric kitchen frames                    ~0.15M
-  target: 0.03           # benchmark TRAIN splits (VizWiz, TextVQA, EgoBlind) ~45K
+  cc12m: 0.41            # web, open-vocabulary                       ~10.9M
+  objects: 0.15          # object-centric: ${objects_source} (ImageNet-1k 1.28M, default; ImageNet-21k 13.7M)
+  openimages: 0.125      # multi-object scenes (box-annotated subset)   ~1.7M
+  sa1b: 0.10             # high-resolution dense scenes                 ~1.1M
+  pixmo_docs: 0.075      # text-rich: charts / tables / diagrams        ~0.26M
+  synthdog_en: 0.04      # text-rich: synthetic documents               ~0.5M
+  cauldron: 0.10         # text-rich: docs / charts / scene text / UI   ~0.4M
 drop_groups: []
 
 train:
@@ -37,20 +37,15 @@ train:
   - {name: image_corpus, root: "${corpus_root}/text_rich/pixmo_docs", group: text_rich, weight: "${data_module.mixture.pixmo_docs}"}
   - {name: image_corpus, root: "${corpus_root}/text_rich/synthdog_en", group: text_rich, weight: "${data_module.mixture.synthdog_en}"}
   - {name: image_corpus, root: "${corpus_root}/text_rich/cauldron/*", group: text_rich, weight: "${data_module.mixture.cauldron}"}
-  - {name: image_corpus, root: "${corpus_root}/egocentric/ego4d", group: egocentric, weight: "${data_module.mixture.ego4d}"}
-  - {name: image_corpus, root: "${corpus_root}/egocentric/epic_kitchens", group: egocentric, weight: "${data_module.mixture.epic_kitchens}"}
-  - {name: target_train, data_root: "${data_root}", group: target, weight: "${data_module.mixture.target}"}
 
-# Model selection (selection_metric = val/fid_lm_cos, image-weighted over all groups and budgets) and per-group monitoring
-# (val/<group>/token_cos, ...). `limit` keeps an evenly spaced subset of each source's val split.
+# Model selection (selection_metric, image-weighted over all groups and budgets) on the corpus val split only, and
+# per-group monitoring (val/<group>/...). `limit` keeps an evenly spaced subset of each source's val split.
 val:
   - {name: image_corpus, split: val, limit: 1000, group: web, root: "${corpus_root}/cc12m"}
   - {name: image_corpus, split: val, limit: 1000, group: objects, root: "${corpus_root}/${objects_source}"}
   - {name: image_corpus, split: val, limit: 500, group: scenes, root: "${corpus_root}/openimages"}
   - {name: image_corpus, split: val, limit: 500, group: scenes, root: "${corpus_root}/sa1b"}
   - {name: image_corpus, split: val, limit: 1000, group: text_rich, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}
-  - {name: image_corpus, split: val, limit: 1000, group: egocentric, root: ["${corpus_root}/egocentric/ego4d", "${corpus_root}/egocentric/epic_kitchens"]}
-  - {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: image, limit: 1000, group: target}   # official VizWiz val
 
 # Reported once after training with the best checkpoint (run_distill.py final_test); never used for selection.
 test:
@@ -58,7 +53,6 @@ test:
   - {name: image_corpus, split: test, limit: 5000, group: objects, root: "${corpus_root}/${objects_source}"}
   - {name: image_corpus, split: test, limit: 5000, group: scenes, root: ["${corpus_root}/openimages", "${corpus_root}/sa1b"]}
   - {name: image_corpus, split: test, limit: 5000, group: text_rich, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"]}
-  - {name: image_corpus, split: test, limit: 5000, group: egocentric, root: ["${corpus_root}/egocentric/ego4d", "${corpus_root}/egocentric/epic_kitchens"]}
 
 # Batching protocol (docs/protocol.md): one budget + one processor shape per batch, ~tokens_per_batch
 # soft tokens per batch, no padding; every budget and aspect ratio of the input domain is trained.

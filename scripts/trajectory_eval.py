@@ -4,10 +4,13 @@ For each ``<run_dir>/step_<n>/`` (in step order), on fixed subsets so every poin
 
 * E1: fidelity on every held-out / corpus / target set (``max_images_per_set`` images each, a few budgets);
 * E2: ImageNet-1k k-NN and linear probes (``train_per_class`` per class, ``val_images`` val) and NYUv2 depth;
-* E3: downstream with the student grafted into Gemma 4, rule-based scores only (no LLM judge): VizWiz val,
-  TextVQA val, CV-Bench, EgoSchema subset (a seeded sample of ``e3_items`` questions each).
+* E3: downstream with the student grafted into Gemma 4, rule-based scores only (no LLM judge): TextVQA val and
+  CV-Bench (a seeded sample of ``e3_items`` questions each; ``--e3`` also accepts vizwiz_vqa, egoschema_subset);
+* lmms (opt-in, ``--evals ...,lmms``): the full general suite (``onboard_vlm/eval/suites.py``, Cambrian-1 protocol,
+  lmms-eval, every item) on the exports of ``--lmms_steps`` (default: the first and the last, i.e. before and after
+  training), one job per category; with ``--teacher`` also the *blind* control (grey images).
 
-Outputs go to ``<run_dir>/step_<n>/eval/{e1,e2,e3/<benchmark>}``; finished evaluations are skipped, so the
+Outputs go to ``<run_dir>/step_<n>/eval/{e1,e2,e3/<benchmark>,lmms/<category>}``; finished evaluations are skipped, so the
 script can be re-run. Jobs run in parallel, one per GPU. ``--teacher`` evaluates the original encoder once
 (E2, E3) into ``<run_dir>`` as the reference line of the plots.
 
@@ -21,12 +24,13 @@ import argparse
 import glob
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-E3_BENCHMARKS = ("vizwiz_vqa", "textvqa", "cvbench", "egoschema_subset")
+E3_BENCHMARKS = ("textvqa", "cvbench")  # general (OCR, vision-centric); the application sets stay available via --e3
 
 
 def jobs_for(target: str, student_dir: str | None, a) -> list[tuple[str, list[str], str]]:
@@ -57,7 +61,28 @@ def jobs_for(target: str, student_dir: str | None, a) -> list[tuple[str, list[st
                                      f"output_dir={d}", f"hydra.run.dir={d}/hydra", "use_judge=false",
                                      f"++benchmark.dataset.sample={a.e3_items}", f"vlm_id={a.vlm_id}", *a.extra],
                          os.path.join(d, "metrics.json")))
+    if "lmms" in a.evals and (student_dir is None or tag in a.lmms_tags):
+        sys.path.insert(0, ROOT)
+        from onboard_vlm.eval.suites import CATEGORIES, EXTRA, JUDGED
+
+        model_args = f"pretrained={a.vlm_id},max_soft_tokens={a.lmms_budget}" + (f",student_dir={student_dir}" if student_dir else "")
+        for blind in ([False, True] if student_dir is None else [False]):
+            for cat, ts in {**CATEGORIES, **EXTRA}.items():
+                ts = [t for t in ts if a.judged or t not in JUDGED]
+                if not ts:
+                    continue
+                slug = re.sub(r"[^a-z0-9]+", "_", cat.lower()).strip("_")
+                d = os.path.join(out, "lmms_blind" if blind else "lmms", slug)
+                jobs.append((f"{'lmms_blind' if blind else 'lmms'}/{slug}",
+                             [sys.executable, "-u", "run_lmms_eval.py", "--model", "onboard_gemma4",
+                              "--model_args", model_args + (",blind=True" if blind else ""), "--tasks", ",".join(ts),
+                              "--batch_size", "1", "--log_samples", "--output_path", d],
+                             os.path.join(d, "**", "*_results.json")))
     return jobs
+
+
+def done(marker: str) -> bool:
+    return bool(glob.glob(marker, recursive=True)) if "*" in marker else os.path.isfile(marker)
 
 
 def main() -> None:
@@ -75,6 +100,9 @@ def main() -> None:
     p.add_argument("--val_images", type=int, default=10000)
     p.add_argument("--e3", default=",".join(E3_BENCHMARKS))
     p.add_argument("--e3_items", type=int, default=500)
+    p.add_argument("--lmms_steps", default="first,last", help="exports that get the full general suite: first,last | all | step numbers")
+    p.add_argument("--lmms_budget", type=int, default=280)
+    p.add_argument("--judged", action="store_true", help="also the GPT-judged benchmarks of the suite (needs OPENAI_API_KEY)")
     p.add_argument("--bootstrap", type=int, default=2000)
     p.add_argument("--steps", default=None, help="only these steps (comma-separated), e.g. 0,1000")
     p.add_argument("--extra", nargs="*", default=[], help="Hydra overrides appended to every command (e.g. device=cpu)")
@@ -94,14 +122,21 @@ def main() -> None:
         if not steps:
             sys.exit(f"no step_* exports under {a.run_dir} (TrajectoryCallback)")
         targets = [(s, s) for s in steps]
-    todo, done = [], 0
+    names = [os.path.basename(os.path.normpath(t)) for t, _ in targets]
+    if a.lmms_steps == "all":
+        a.lmms_tags = set(names)
+    else:
+        want = set(a.lmms_steps.split(","))
+        a.lmms_tags = {n for i, n in enumerate(names) if (i == 0 and "first" in want) or (i == len(names) - 1 and "last" in want)
+                       or n[5:].lstrip("0") in {w.lstrip("0") for w in want}}
+    todo, n_done = [], 0
     for target, student in targets:
         for name, cmd, marker in jobs_for(target, student, a):
-            if os.path.isfile(marker):
-                done += 1
+            if done(marker):
+                n_done += 1
             else:
                 todo.append((target, name, cmd))
-    print(f"[trajectory_eval] {a.run_dir}: {len(todo)} evaluations to run, {done} already done, on {a.gpus} GPU(s)", flush=True)
+    print(f"[trajectory_eval] {a.run_dir}: {len(todo)} evaluations to run, {n_done} already done, on {a.gpus} GPU(s)", flush=True)
     if a.dry_run:
         for target, name, cmd in todo:
             print(f"  {os.path.basename(target)} {name}: {' '.join(cmd[2:])}")

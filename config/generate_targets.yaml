@@ -28,22 +28,17 @@ templates:                  # image-agnostic prompts (onboard_vlm/data/teacher_t
   caption_short: "Describe this image in one sentence."
   ocr: "Read out all the text visible in this image. If there is no text, say that there is none."
   spatial: "List the main objects in this image and describe where they are relative to each other."
-  assistive: "I am blind. Briefly describe what is in front of me and anything I should be careful about."
+  reasoning: "What is notable or unusual in this image, and why?"
   salient: "What is the main subject of this image, and what is happening?"
 
-sources:                    # ~250k prompts: every corpus group + the benchmark train questions
+sources:                    # ~150k prompts over every corpus group (general-purpose; no benchmark data)
   - {dataset: {name: image_corpus, root: "${corpus_root}/cc12m", split: train, limit: 40000}}
   - {dataset: {name: image_corpus, root: "${corpus_root}/${objects_source}", split: train, limit: 30000}}
   - {dataset: {name: image_corpus, root: ["${corpus_root}/openimages", "${corpus_root}/sa1b"], split: train, limit: 40000}}
   - {dataset: {name: image_corpus, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/synthdog_en", "${corpus_root}/text_rich/cauldron/*"], split: train, limit: 40000}}
-  - {dataset: {name: image_corpus, root: ["${corpus_root}/egocentric/ego4d", "${corpus_root}/egocentric/epic_kitchens"], split: train, limit: 40000}}
-  - {dataset: {name: lmdb_vqa, path: "${data_root}/vizwiz", split: train, mode: vqa}, use_dataset_question: true}
-  - {dataset: {name: lmdb_vqa, path: "${data_root}/textvqa", split: train, mode: vqa}, use_dataset_question: true}
 val_sources:                # held-out images (corpus val split) for the validation KL
   - {dataset: {name: image_corpus, root: ["${corpus_root}/cc12m", "${corpus_root}/${objects_source}", "${corpus_root}/openimages"], split: val, limit: 1000}}
   - {dataset: {name: image_corpus, root: ["${corpus_root}/text_rich/pixmo_docs", "${corpus_root}/text_rich/cauldron/*"], split: val, limit: 500}}
-  - {dataset: {name: image_corpus, root: "${corpus_root}/egocentric/ego4d", split: val, limit: 500}}
-  - {dataset: {name: lmdb_vqa, path: "${data_root}/vizwiz", split: val, mode: vqa, limit: 500}, use_dataset_question: true}
 
 defaults:
   - _self_

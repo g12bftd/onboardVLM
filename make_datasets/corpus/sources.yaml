@@ -38,6 +38,7 @@ sources:
     license: Ego4D License Agreement (research)
     images: 1800000  # upper bound before still-frame removal
     build: make_frame_corpus.py --input_path "$RAW_ROOT/ego4d/v2/video_540ss" --fps 0.5
+    optional: true   # application-domain ablation only (data_module=general_vision_plus); not in the general corpus
   - dir: egocentric/epic_kitchens
     group: egocentric
     name: EPIC-KITCHENS-100 videos, frames at 0.5 fps
@@ -45,6 +46,7 @@ sources:
     license: CC BY-NC 4.0
     images: 180000
     build: make_frame_corpus.py --input_path "$RAW_ROOT/epic_kitchens/EPIC-KITCHENS" --fps 0.5
+    optional: true   # application-domain ablation only (data_module=general_vision_plus)
   # ---------------------------------------------------------------- multi-object scenes
   - dir: openimages
     group: scenes

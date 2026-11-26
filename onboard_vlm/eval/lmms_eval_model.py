@@ -29,11 +29,14 @@ class OnboardGemma4(_LmmsGemma4):
         revision: commit (default: the pinned one in ``SUPPORTED_TEACHERS``).
         student_dir: exported student; ``None`` = the original vision tower (teacher baseline).
         max_aspect: declared input domain of the student; out-of-domain inputs are counted and logged.
+        blind: replace every image by a mid-grey image of the same size (same prompt, same number of soft tokens, no
+            visual information): what the language model answers without seeing (onboard_vlm/eval/suites.py).
         **kwargs: everything lmms-eval's ``gemma4`` accepts (``max_soft_tokens``, ``batch_size``, ...).
     """
 
     def __init__(self, pretrained: str = "google/gemma-4-E2B-it", revision: str | None = None, student_dir: str | None = None,
-                 max_aspect: float = 4.0, **kwargs: Any) -> None:
+                 max_aspect: float = 4.0, blind: bool | str = False, **kwargs: Any) -> None:
+        self.blind = str(blind).lower() in ("1", "true", "yes")
         if not os.path.isdir(pretrained):  # pin the revision: lmms-eval's loader takes no revision argument
             from huggingface_hub import snapshot_download
 
@@ -54,6 +57,13 @@ class OnboardGemma4(_LmmsGemma4):
             ref = next(self.model.parameters())
             self.grafted = GraftedVLM(self.model, student.to(ref.dtype), domain=InputDomain(max_aspect=float(max_aspect)))
             log.info("     grafted student %s into the unchanged VLM", student_dir)
+
+    def _encode_image_data_url(self, image, *args: Any, **kwargs: Any):
+        if self.blind:  # the vision-free control: identical structure, no visual content
+            from PIL import Image
+
+            image = Image.new("RGB", image.size, (128, 128, 128))
+        return super()._encode_image_data_url(image, *args, **kwargs)
 
     def generate_until(self, requests):
         out = super().generate_until(requests)

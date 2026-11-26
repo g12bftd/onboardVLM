@@ -1,0 +1,15 @@
+# @package _global_
+# (2) Manifold distillation on the output tokens (Hao et al., NeurIPS 2022): the student reproduces the teacher's
+# token-to-token similarities (cosine relation matrices) of the same image: intra-image (N x N per image), inter-image
+# (B x B per token position) and K randomly sampled tokens of the batch; one entry per term so each has its own curve.
+# Relations fix the tokens up to one rotation of the feature space; embed_vision only reads token directions (its
+# RMSNorm has no scale), so the frozen LM can read these tokens when the student starts from the teacher. docs/methods.md.
+objective_name: md_w${md.scale}   # the MD scale is part of the run name (md_scale study)
+layer_map: {}
+md: {scale: 1.0, intra: 1.0, inter: 1.0, random: 1.0, num_random: 256, reduction: mean}   # scale x (alpha, beta, gamma), K; docs/methods.md
+criterion:
+  - {name: manifold, label: md_intra, weight: "${md.scale}", intra: "${md.intra}", inter: 0.0, random: 0.0, reduction: "${md.reduction}"}
+  - {name: manifold, label: md_inter, weight: "${md.scale}", intra: 0.0, inter: "${md.inter}", random: 0.0, reduction: "${md.reduction}"}
+  - {name: manifold, label: md_random, weight: "${md.scale}", intra: 0.0, inter: 0.0, random: "${md.random}", num_random: "${md.num_random}", reduction: "${md.reduction}"}
+task:
+  vision_criterion: null

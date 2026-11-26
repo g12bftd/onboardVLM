@@ -1,0 +1,33 @@
+# @package _global_
+# Literature study (docs/methods.md): one student, one compute budget, one data stream; the objective, the mixup and
+# the weight sharing are the only factors that change between runs.
+#   (1) function matching on output tokens (Beyer et al., CVPR 2022)        objective=fm
+#   (2) manifold distillation on output tokens (Hao et al., NeurIPS 2022)   objective=md | fm_md
+#   (3) (1) or (2) on intermediate layers                                   objective=fm_fmL | fm_mdL
+#   (4) weight multiplexing (Zhang et al., CVPR 2022)                       student.share_every=2 student.share_transform=linear|dwconv|none
+#   python -u run_distill.py +experiment=lit/base objective=fm_mdL student.num_hidden_layers=8 student.hidden_size=384 seed=0
+experiment_name: lit_${objective_name}_mx${data_module.collator.mixup_alpha}_L${student.num_hidden_layers}_D${student.hidden_size}_x${student.share_every}-${student.share_transform}
+validate_at_start: true         # step 0 of every learning curve
+defaults:
+  - /objective: fm              # after the criterion group, so its terms replace the criterion list
+  - override /task: embedding_distillation
+  - override /criterion: embedding_tokens
+  - override /teacher: gemma4_e2b
+  - override /student: gemma4_shrink
+  - override /data_module: general_vision_lite
+student:
+  num_hidden_layers: 8
+  hidden_size: 384
+  share_every: 1
+  share_transform: none         # set with share_every > 1
+data_module:
+  collator:
+    mixup_alpha: 1.0            # Beyer et al.: mixup with lambda ~ U(0, 1) = Beta(1, 1), the same mixed image for both models
+    mixup_prob: 1.0
+trainer:
+  max_epochs: 10                # 10 x 500k = 5M image samples per run (equal for every run of the study)
+  val_check_interval: 0.5       # 20 validation points + step 0
+callbacks:
+  trajectory:                   # student exports at fixed fractions of training -> scripts/trajectory_eval.py
+    _target_: onboard_vlm.utils.callbacks.TrajectoryCallback
+    dirpath: ${output_root}/trajectories/${run_id}

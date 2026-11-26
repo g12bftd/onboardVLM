@@ -1,0 +1,12 @@
+# @package _global_
+# (1) on the output tokens + (3) applied with (1) to intermediate layers: each of `layer_map` (auto: 3 student layers
+# spread over its depth <- the teacher layers at the same relative depth) matches its teacher layer's tokens through a
+# training-only linear head (FitNets, Romero et al. ICLR 2015), LayerNorm-normalised MSE. docs/methods.md.
+objective_name: fm_fmL
+layer_map: auto
+criterion:
+  - {name: token_feature, label: fm_mse, weight: 1.0, metric: mse, normalize: none}
+  - {name: token_feature, label: fm_cos, weight: 1.0, metric: cosine}
+task:
+  vision_criterion:
+    - {name: intermediate_layer, label: fmL, weight: 1.0, mode: feature, metric: mse, normalize: layernorm}

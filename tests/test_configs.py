@@ -49,7 +49,7 @@ def test_experiment_composes_and_task_matches_criterion(exp):
     cfg = _compose([f"+experiment={exp}", "student_dir=x"])
     task = cfg.task._target_.rsplit(".", 1)[-1]
     assert task in TASK_CRITERIA
-    assert exp.split("/")[0] in ("debug", "baselines", "shrink", TASK_CRITERIA[task])  # grouped by distillation type (or study)
+    assert exp.split("/")[0] in ("debug", "baselines", "shrink", "lit", TASK_CRITERIA[task])  # grouped by distillation type (or study)
     crit = OmegaConf.to_container(cfg.criterion, resolve=True)
     OmegaConf.to_container(cfg.data_module, resolve=True)  # every interpolation resolves
     if task == "LogitDistillationTask":
@@ -135,3 +135,44 @@ def test_evaluation_configs_compose(name):
     with initialize_config_dir(config_dir=CFG, version_base=None):
         cfg = compose(name)
     OmegaConf.to_container(cfg, resolve=True)
+
+
+STUDIES = ["identity", "depth", "width", "init", "grid", "objective", "md_scale", "multiplex"]
+
+
+@pytest.mark.parametrize("study", STUDIES)
+def test_study_launcher_names_are_the_run_ids(study):
+    """The launcher decides "done" from the run name it predicts: it must be exactly the run_id the overrides produce."""
+    import subprocess
+
+    import onboard_vlm  # noqa: F401  (registers the seed_tag resolver)
+
+    env = {**os.environ, "ONBOARD_VLM_ROOT": "/nonexistent", "ONBOARD_VLM_OUT": "/nonexistent/out"}
+    out = subprocess.run(["bash", os.path.join(ROOT, "scripts", "slurm", "submit_shrink_study.sh"), "--study", study, "--list"],
+                         capture_output=True, text=True, env=env, check=True).stdout.split("\n")
+    lines = [ln for ln in out if ln.strip()]
+    assert lines
+    for ln in lines:
+        name, overrides = ln.split("|")
+        cfg = _compose(overrides.split() + ["seed=0"])
+        assert cfg.run_id == f"{name}_s0", (cfg.run_id, name)
+    if study == "objective":  # every objective of the literature study, one at a time
+        assert {_compose(ln.split("|")[1].split()).objective_name.split("_w")[0] for ln in lines} == {"fm", "md", "fm_md", "fm_fmL", "fm_mdL"}
+
+
+@pytest.mark.parametrize("objective", sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(CFG, "objective", "*.yaml"))))
+def test_objectives_build_their_losses(objective):
+    """Each objective builds; relation-only intermediate terms come without projection heads (no unused DDP parameters)."""
+    import onboard_vlm  # noqa: F401
+
+    cfg = OmegaConf.to_container(_compose(["+experiment=lit/base", f"objective={objective}"]), resolve=True)
+    assert cfg["task"]["_target_"].endswith("EmbeddingDistillationTask")
+    CompositeLoss(cfg["criterion"])
+    vc = cfg["task"].get("vision_criterion") or []
+    if vc:
+        CompositeLoss(vc)
+    uses_layers = any(t["name"] == "intermediate_layer" for t in vc)
+    assert (cfg["layer_map"] == "auto") == uses_layers
+    relation_only = uses_layers and all(t.get("mode") == "manifold" for t in vc if t["name"] == "intermediate_layer")
+    assert cfg["task"]["adapter"].get("layer_heads", True) is (not relation_only)
+    assert cfg["data_module"]["collator"]["mixup_alpha"] == 1.0

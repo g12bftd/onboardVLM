@@ -26,5 +26,10 @@ sets:
   blink:          {roles: [blocklist], hf: BLINK-Benchmark/BLINK, include: ["*/val-*.parquet", "*/test-*.parquet"], parquet: "*/*.parquet", column: "image_1,image_2,image_3,image_4"}
   mmmu_val:       {roles: [blocklist], hf: lmms-lab-encoder/MMMU, include: ["data/validation-*.parquet"], parquet: "data/validation-*.parquet", column: "image_1,image_2,image_3,image_4,image_5,image_6,image_7"}
   cvbench:        {roles: [blocklist], hf: nyu-visionx/CV-Bench, include: ["test_2d.parquet", "test_3d.parquet"], parquet: "test_*.parquet", column: image}
+  # the rest of the general suite (onboard_vlm/eval/suites.py: Cambrian-1 categories)
+  mme:            {roles: [blocklist], hf: lmms-lab-encoder/MME, include: ["data/test-*.parquet"], parquet: "data/test-*.parquet", column: image}
+  gqa_testdev:    {roles: [blocklist, fidelity], hf: lmms-lab-encoder/GQA, include: ["testdev_balanced_images/*.parquet"], parquet: "testdev_balanced_images/*.parquet", column: image}
+  scienceqa_img:  {roles: [blocklist], hf: lmms-lab-encoder/ScienceQA, include: ["ScienceQA-IMG/test-*.parquet"], parquet: "ScienceQA-IMG/test-*.parquet", column: image}
+  textvqa_val:    {roles: [blocklist, fidelity], hf: lmms-lab-encoder/textvqa, include: ["data/validation-*.parquet"], parquet: "data/validation-*.parquet", column: image}
 # Video benchmarks (Video-MME, MVBench) are not fingerprinted: their sources (YouTube; MVBench's public
 # video datasets) are not in the training corpus. EgoSchema / EgoTextVQA-Indoor are excluded by Ego4D video id.

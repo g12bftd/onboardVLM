@@ -35,15 +35,18 @@ changes per study.
 | `init` | 8 x 384: teacher-uniform, teacher-first, random | does inheriting the teacher's weights matter, and how? |
 | `grid` | {4, 8, 12} x {256, 384, 512}, teacher init | depth vs width at equal parameters |
 
+The same launcher runs the literature studies (`--study md_scale | objective | multiplex`: function matching,
+manifold distillation, intermediate layers, weight multiplexing), described in [methods.md](methods.md).
+
 Run `identity` and `depth` first; `grid` (27 runs with 3 seeds) after the first results.
 
 ## 3. What is measured, and when
 
 | when | what | where |
 |---|---|---|
-| step 0 and every half epoch (val split: corpus groups + VizWiz val, budgets 70 / 280 / 1120) | LM-space cosine, MSE, relative error; vision-space cosine, MSE, relative error; worst-5% token cosine; CKA; per budget and per group; training losses | `logs/onboard_vlm/<run_id>/metrics.csv` |
-| 10 checkpoints at 0, 1, 2, 5, 10, 20, 35, 50, 75, 100% of training (student exports) | E1 fidelity on fixed subsets (500 images per held-out set, budgets 70 / 280 / 1120); E2 ImageNet k-NN and linear probes, NYUv2 depth; E3 with the student grafted into Gemma 4 E2B, rule-based scores, a fixed sample of 500 questions each: VizWiz val, TextVQA val, CV-Bench, EgoSchema subset | `trajectories/<run_id>/step_*/eval/` |
-| once | the teacher's E2 / E3 on the same items (reference lines) | `trajectories/_teacher_e2b/eval/` |
+| step 0 and every half epoch (val split: corpus groups, budgets 70 / 280 / 1120) | LM-space cosine, MSE, relative error; vision-space cosine, MSE, relative error; worst-5% token cosine; CKA; per budget and per group; training losses | `logs/onboard_vlm/<run_id>/metrics.csv` |
+| 10 checkpoints at 0, 1, 2, 5, 10, 20, 35, 50, 75, 100% of training (student exports) | E1 fidelity on fixed subsets (500 images per held-out set, budgets 70 / 280 / 1120); E2 ImageNet k-NN and linear probes, NYUv2 depth; E3 with the student grafted into Gemma 4 E2B, rule-based scores, a fixed sample of 500 questions each: TextVQA val, CV-Bench; on the last export, the full general suite (Cambrian-1 protocol, [protocol.md](protocol.md) E3) | `trajectories/<run_id>/step_*/eval/` |
+| once | the teacher's E2 / E3 on the same items (reference lines), and the blind control of the general suite | `trajectories/_teacher_e2b/eval/` |
 
 Every curve has a compute axis (images and soft tokens seen), and every checkpoint is evaluated on the same items.
 

@@ -9,4 +9,4 @@ defaults:
 hydra:
   sweeper:
     params:
-      data_module.drop_groups: "[],[web],[objects],[scenes],[text_rich],[egocentric],[target]"
+      data_module.drop_groups: "[],[web],[objects],[scenes],[text_rich]"

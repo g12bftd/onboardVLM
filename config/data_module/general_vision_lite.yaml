@@ -12,7 +12,4 @@ train:
   - {name: image_corpus, root: "${corpus_root}/text_rich/pixmo_docs", max_shards: 2, group: text_rich, weight: "${data_module.mixture.pixmo_docs}"}
   - {name: image_corpus, root: "${corpus_root}/text_rich/synthdog_en", max_shards: 2, group: text_rich, weight: "${data_module.mixture.synthdog_en}"}
   - {name: image_corpus, root: "${corpus_root}/text_rich/cauldron/*", max_shards: 1, group: text_rich, weight: "${data_module.mixture.cauldron}"}
-  - {name: image_corpus, root: "${corpus_root}/egocentric/ego4d", max_shards: 6, group: egocentric, weight: "${data_module.mixture.ego4d}"}
-  - {name: image_corpus, root: "${corpus_root}/egocentric/epic_kitchens", max_shards: 2, group: egocentric, weight: "${data_module.mixture.epic_kitchens}"}
-  - {name: target_train, data_root: "${data_root}", group: target, weight: "${data_module.mixture.target}"}
 samples_per_epoch: 500000

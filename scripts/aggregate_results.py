@@ -30,6 +30,8 @@ import re
 import sys
 from collections import defaultdict
 
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from onboard_vlm.eval.stats import bootstrap_ci, hierarchical_paired_bootstrap, holm, paired_bootstrap, seed_summary
 
@@ -70,6 +72,8 @@ def _lmms_item(rec: dict) -> float | None:
 
 
 def load_lmms_scores(root: str) -> dict[str, dict[str, float]]:
+    from onboard_vlm.eval.suites import item_score
+
     out: dict[str, dict[str, float]] = {}
     for path in glob.glob(os.path.join(root, "**", "*_samples_*.jsonl"), recursive=True):
         task = re.sub(r"\.jsonl$", "", path.rsplit("_samples_", 1)[1])
@@ -77,11 +81,57 @@ def load_lmms_scores(root: str) -> dict[str, dict[str, float]]:
         with open(path) as f:
             for line in f:
                 rec = json.loads(line)
-                s = _lmms_item(rec)
+                s = item_score(task, rec)
+                s = _lmms_item(rec) if s is None else s
                 if s is not None:
                     scores[str(rec.get("doc_id"))] = s
         if scores:
             out[f"lmms/{task}"] = scores
+    return out
+
+
+def load_lmms_headlines(root: str) -> dict[str, float]:
+    """``{task: headline score on 0-100}`` from lmms-eval's ``*_results.json`` (``onboard_vlm.eval.suites.headlines``)."""
+    from onboard_vlm.eval.suites import headlines
+
+    return headlines(root)
+
+
+def suite_table(heads: dict[str, list[dict[str, float]]], reference: str | None, blind: str | None) -> dict:
+    """Cambrian-1-style table: per task and category (seed mean +- std, 0-100), overall mean, retention vs ``reference``
+    and the share of the reference's advantage over ``blind`` (no image) that each model keeps."""
+    from onboard_vlm.eval.suites import CATEGORIES, EXTRA
+
+    groups = {**CATEGORIES, **EXTRA}
+    out: dict = {"models": {}, "categories": list(groups), "reference": reference, "blind": blind}
+
+    def stats(vals: list[float]) -> dict[str, float]:
+        a = np.array(vals, dtype=float)
+        return {"mean": float(a.mean()), "std": float(a.std(ddof=1)) if len(a) > 1 else 0.0, "n_seeds": len(a)}
+
+    for model, seeds in heads.items():
+        tasks = sorted({t for sd in seeds for t in sd})
+        e: dict = {"tasks": {t: stats([sd[t] for sd in seeds if t in sd]) for t in tasks}, "categories": {}}
+        for c, ts in groups.items():
+            have = [t for t in ts if all(t in sd for sd in seeds)]
+            if have:  # per seed: mean over the category's benchmarks, then over seeds
+                e["categories"][c] = {**stats([float(np.mean([sd[t] for t in have])) for sd in seeds]), "benchmarks": have,
+                                      "missing": [t for t in ts if t not in have]}
+        core = [t for ts in CATEGORIES.values() for t in ts if all(t in sd for sd in seeds)]
+        if core:
+            e["overall"] = {**stats([float(np.mean([sd[t] for t in core])) for sd in seeds]), "benchmarks": core}
+        out["models"][model] = e
+    ref = out["models"].get(reference) if reference else None
+    bl = out["models"].get(blind) if blind else None
+    for e in out["models"].values():
+        for scope, key in [(e["categories"], c) for c in e["categories"]] + ([(e, "overall")] if "overall" in e else []):
+            v = scope[key]["mean"]
+            r = (ref["categories"].get(key) if key != "overall" else ref.get("overall")) if ref else None
+            b = (bl["categories"].get(key) if key != "overall" else bl.get("overall")) if bl else None
+            if r:
+                scope[key]["retention"] = v / r["mean"] if r["mean"] else float("nan")
+                if b and r["mean"] != b["mean"]:
+                    scope[key]["visual_retention"] = (v - b["mean"]) / (r["mean"] - b["mean"])
     return out
 
 
@@ -156,6 +206,17 @@ def _fmt(ci: dict | None) -> str:
 
 def write_markdown(path: str, tables: dict, reference: str | None) -> None:
     lines = ["# Results", ""]
+    st = tables.get("suite") or {}
+    if st.get("models"):
+        cats = [c for c in st["categories"] if any(c in e["categories"] for e in st["models"].values())]
+        lines += ["## General capabilities (Cambrian-1 categories, 0-100, seed mean +- std)", "",
+                  "| model | " + " | ".join(cats) + " | overall | retention | visual retention |", "|---" * (len(cats) + 4) + "|"]
+        for m, e in st["models"].items():
+            cells = [f"{e['categories'][c]['mean']:.1f} +- {e['categories'][c]['std']:.1f}" if c in e["categories"] else "-" for c in cats]
+            o = e.get("overall", {})
+            lines.append(f"| {m} | " + " | ".join(cells) + f" | {o.get('mean', float('nan')):.1f} | {o.get('retention', float('nan')):.3f} | "
+                         f"{o.get('visual_retention', float('nan')):.3f} |")
+        lines.append("")
     if tables.get("benchmarks"):
         lines += ["## Benchmarks", "", f"mean [95% bootstrap CI] | seeds mean +- std | retention and paired diff vs `{reference}` (Holm p)", "",
                   "| benchmark | model | score | seeds | retention | diff vs ref [CI] | p (Holm) |", "|---|---|---|---|---:|---|---:|"]
@@ -208,6 +269,26 @@ def write_latex(path: str, tables: dict, reference: str | None, higher_is_better
     bold; $^\\dagger$: differs from ``reference`` at Holm-corrected p < 0.05), E1 fidelity per budget, E2 probes."""
     hib = higher_is_better or {}
     parts = ["% generated by scripts/aggregate_results.py (\\usepackage{booktabs})", ""]
+    st = tables.get("suite") or {}
+    if st.get("models"):
+        cats = [c for c in st["categories"] if any(c in e["categories"] for e in st["models"].values())]
+        models = list(st["models"])
+        if reference in models:
+            models = [reference] + [m for m in models if m != reference]
+        cols = [*cats, "Overall", "Ret.", "Vis. ret."]
+        best = {c: max(e["categories"][c]["mean"] for e in st["models"].values() if c in e["categories"]) for c in cats}
+        rows = []
+        for m in models:
+            e = st["models"][m]
+            cells = [_cell(e["categories"][c]["mean"], f" $\\pm$ {e['categories'][c]['std']:.1f}" if e["categories"][c]["n_seeds"] > 1 else "",
+                           abs(e["categories"][c]["mean"] - best[c]) < 1e-9, False).replace(".000", ".0") if c in e["categories"] else "--" for c in cats]
+            o = e.get("overall", {})
+            cells += [f"{o['mean']:.1f}" if o else "--", f"{o['retention']:.3f}" if "retention" in o else "--",
+                      f"{o['visual_retention']:.3f}" if "visual_retention" in o else "--"]
+            rows.append((m, cells))
+        parts.append(latex_table("General vision-language capabilities with the student in the unchanged Gemma 4 (Cambrian-1 "
+                                 "categories, 0--100, seed mean $\\pm$ std). Ret.: overall / reference. Vis. ret.: (model $-$ blind) / "
+                                 "(reference $-$ blind), blind = every image grey.", "tab:general", cols, rows))
     bench = tables.get("benchmarks") or {}
     if bench:
         cols = list(bench)
@@ -276,6 +357,7 @@ def main() -> None:
     p.add_argument("--fidelity", action="append", default=[])
     p.add_argument("--probe", action="append", default=[])
     p.add_argument("--reference", default=None)
+    p.add_argument("--blind", default=None, help="the --lmms model run with blind=True (no image): visual retention")
     p.add_argument("--out", required=True)
     args = p.parse_args()
     runs: dict[str, list[dict]] = defaultdict(list)
@@ -288,7 +370,9 @@ def main() -> None:
                 runs[model][i].update(s) if i < len(runs[model]) else runs[model].append(s)
         else:
             runs[model] = lm
-    tables = {"benchmarks": benchmark_table(dict(runs), args.reference) if runs else {},
+    heads = {model: [load_lmms_headlines(d) for d in dirs] for model, dirs in _pairs(args.lmms).items()}
+    tables = {"suite": suite_table(heads, args.reference, args.blind) if any(any(h) for h in heads.values()) else {},
+              "benchmarks": benchmark_table(dict(runs), args.reference) if runs else {},
               "fidelity": fidelity_table(_pairs(args.fidelity), args.reference) if args.fidelity else {},
               "probes": {m: json.load(open(os.path.join(d[0], "results.json"))) for m, d in _pairs(args.probe).items()}}
     os.makedirs(args.out, exist_ok=True)

@@ -18,16 +18,13 @@ Built with `--skip sa1b,ego4d,epic_kitchens,egoblind,egotextvqa` (section 6):
 
 | group | sources present | mixture weight (paper) | renormalised |
 |---|---|---:|---:|
-| web | CC12M | 0.33 | 0.44 |
-| objects | ImageNet-1k train | 0.12 | 0.16 |
-| scenes | Open Images (SA-1B missing) | 0.10 (+0.08) | 0.13 |
-| text_rich | PixMo-Docs, SynthDoG-en, The Cauldron (13 subsets) | 0.17 | 0.23 |
-| target | VizWiz train, TextVQA train (EgoBlind train missing) | 0.03 | 0.04 |
-| egocentric | **none** (Ego4D, EPIC-KITCHENS missing) | 0.17 | 0 |
+| web | CC12M | 0.41 | 0.46 |
+| objects | ImageNet-1k train | 0.15 | 0.17 |
+| scenes | Open Images (SA-1B missing) | 0.125 (+0.10) | 0.14 |
+| text_rich | PixMo-Docs, SynthDoG-en, The Cauldron (13 subsets) | 0.215 | 0.24 |
 
-A quarter of the paper mixture is missing, including the whole egocentric group, the domain of the
-target device. Preliminary results therefore measure general-vision distillation; egocentric fidelity
-(E1 on EgoSchema frames is still available) is expected to improve once Ego4D / EPIC-KITCHENS are added.
+The default mixture is general-purpose (no egocentric or benchmark images; those are the
+`general_vision_plus` ablation), so only SA-1B is missing from it.
 
 Benchmarks built: VizWiz, TextVQA, WearVQA, CV-Bench, EgoSchema, EgoTextVQA-Indoor (from the EgoSchema
 clips). Not yet: EgoBlind (one test archive missing), EgoTextVQA-Outdoor (not downloaded).
@@ -72,10 +69,13 @@ trainer.max_epochs=10` (5M image samples per run); B0 measures throughput first.
 
 Each trained run is evaluated with E1 (all sets present, all budgets) and E2.
 
-**Phase C: downstream (E3)**, the student grafted into Gemma 4 E2B, rule-based scores only: VizWiz val
-and TextVQA val (VQA accuracy), CV-Bench and the EgoSchema subset (multiple-choice accuracy), and the
-lmms-eval suite with `DETERMINISTIC=1` (drops the two GPT-judged tasks). The teacher at 70 tokens is the
-"fewer tokens" baseline.
+**Phase C: general abilities (E3)**, the student grafted into Gemma 4 E2B: the Cambrian-1 suite plus POPE,
+MMStar and InfoVQA through lmms-eval (`scripts/eval_general.sh`; GPT-judged benchmarks left out by default),
+with the blind control (`BLIND=1`) once for the teacher. The teacher at 70 tokens is the "fewer tokens"
+baseline.
+
+**Literature studies** (function matching, manifold distillation, intermediate layers, weight multiplexing):
+[methods.md](methods.md).
 
 **Shrinking study** (the first systematic view of the distillation, with curves over training time): the
 Gemma 4 encoder itself made shallower / narrower, see [shrink_study.md](shrink_study.md).

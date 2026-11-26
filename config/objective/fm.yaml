@@ -1,0 +1,11 @@
+# @package _global_
+# (1) Function matching on the output tokens (Beyer et al., CVPR 2022): the student reproduces the teacher's output
+# tokens for the *same* input image (identical crop and mixup for both: data_module.collator.mixup_alpha), measured where
+# the language model reads them, after the frozen embed_vision (scale-free RMSNorm + projection). docs/methods.md.
+objective_name: fm
+layer_map: {}
+criterion:
+  - {name: token_feature, label: fm_mse, weight: 1.0, metric: mse, normalize: none}
+  - {name: token_feature, label: fm_cos, weight: 1.0, metric: cosine}
+task:
+  vision_criterion: null

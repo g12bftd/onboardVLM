@@ -19,6 +19,12 @@ Initialisation (``init``):
   * The output head embeds the kept channels back at their teacher positions, scaled by
     ``sqrt(768 / hidden)`` to undo the pooler's ``sqrt(hidden)``.
 
+Weight multiplexing (``share_every = k``, MiniViT, Zhang et al., CVPR 2022): every ``k`` consecutive layers share one
+set of attention and MLP weights (stored once); each layer keeps its own RMSNorms (as MiniViT keeps LayerNorms
+unshared) and one per-layer transformation of its output, identity-initialised (``share_transform``: ``linear``, a
+``hidden x hidden`` linear layer, or ``dwconv``, a 3x3 depthwise convolution over the patch grid, MiniViT's choice for
+the MLP). With ``init: teacher``, a group's shared weights are those of the teacher layer its first layer inherits.
+
 ``source_layers[j]`` is the teacher layer that student layer ``j`` corresponds to (inherited with ``init:
 teacher``, proportional depth otherwise). ``layer_map: auto`` uses it for the intermediate-layer losses.
 """
@@ -104,6 +110,8 @@ class Gemma4ShrinkStudent(Gemma4ViTStudent):
         load_teacher_weights: bool = True,
         attn_implementation: str = "sdpa",
         grad_checkpointing: bool = False,
+        share_every: int = 1,
+        share_transform: str = "linear",
         **_: object,
     ):
         nn.Module.__init__(self)
@@ -111,6 +119,8 @@ class Gemma4ShrinkStudent(Gemma4ViTStudent):
 
         if init not in ("random", "teacher"):
             raise ValueError(f"init must be random or teacher, got {init!r}")
+        if int(share_every) < 1 or share_transform not in ("linear", "dwconv", "none"):
+            raise ValueError(f"share_every >= 1 and share_transform in linear | dwconv | none, got {share_every}, {share_transform!r}")
         tcfg = teacher_vision_config(model_id, revision, tiny)
         T, H, D, hd = tcfg.num_hidden_layers, tcfg.hidden_size, tcfg.num_attention_heads, tcfg.head_dim
         if H != D * hd:
@@ -135,6 +145,11 @@ class Gemma4ShrinkStudent(Gemma4ViTStudent):
             torch.manual_seed(init_seed)
             self.encoder = Gemma4VisionModel(cfg)
             self.head: nn.Module = nn.Linear(h, out_dim, bias=False) if h != out_dim else nn.Identity()
+        self.share_every = int(share_every)
+        self.share_transform = share_transform
+        self.transforms = nn.ModuleList()
+        if self.share_every > 1:
+            self._multiplex(L, h)
 
         if init == "teacher":
             if out_dim != H:
@@ -156,9 +171,31 @@ class Gemma4ShrinkStudent(Gemma4ViTStudent):
             self.source_layers = [int(round((j + 1) * T / L)) - 1 for j in range(L)]  # proportional depth
         if grad_checkpointing:
             self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-        log.info("     student gemma4_shrink: %d of %d layers x %d of %d wide (heads %d, MLP %d), init=%s%s -> %s", L, T, h, H, heads,
-                 inter, init, f" (layers {self.source_layers}, width {width_selection})" if init == "teacher" else f" (seed {init_seed})",
+        share = f", {L // self.share_every + bool(L % self.share_every)} weight sets shared by {self.share_every} layers + {share_transform}" \
+            if self.share_every > 1 else ""
+        log.info("     student gemma4_shrink: %d of %d layers x %d of %d wide (heads %d, MLP %d)%s, init=%s%s -> %s", L, T, h, H, heads,
+                 inter, share, init, f" (layers {self.source_layers}, width {width_selection})" if init == "teacher" else f" (seed {init_seed})",
                  describe_module(self))
+
+    def _leader(self, j: int) -> int:
+        """The layer whose attention / MLP weights layer ``j`` uses (itself when nothing is shared)."""
+        return j - j % self.share_every
+
+    def _multiplex(self, n_layers: int, hidden: int) -> None:
+        layers = self.encoder.encoder.layers
+        for j in range(n_layers):
+            g = self._leader(j)
+            if g != j:  # the same module objects: stored once, counted once, updated once
+                layers[j].self_attn = layers[g].self_attn
+                layers[j].mlp = layers[g].mlp
+        if self.share_transform != "none":
+            make = LinearTransform if self.share_transform == "linear" else GridDWConvTransform
+            self.transforms = nn.ModuleList(make(hidden) for _ in range(n_layers))
+            for j, layer in enumerate(layers):
+                layer.register_forward_hook(lambda _m, _a, kw, out, j=j: self.transforms[j](out, kw.get("position_ids")), with_kwargs=True)
+
+    def unique_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters())
 
     def inherit_from(self, src: dict[str, torch.Tensor]) -> None:
         """Copy the selected layers / channels / heads / MLP units of a teacher vision tower state dict."""
@@ -171,7 +208,9 @@ class Gemma4ShrinkStudent(Gemma4ViTStudent):
             key = name
             if name.startswith("encoder.layers."):
                 parts = name.split(".")
-                parts[2] = str(self.source_layers[int(parts[2])])
+                j = int(parts[2])
+                shared = parts[3] in ("self_attn", "mlp")  # weights of the group's first layer (weight multiplexing)
+                parts[2] = str(self.source_layers[self._leader(j) if shared else j])
                 key = ".".join(parts)
             if key not in src:
                 raise KeyError(f"student parameter {name} has no teacher counterpart {key}")
@@ -194,3 +233,42 @@ class Gemma4ShrinkStudent(Gemma4ViTStudent):
                 raise ValueError(f"{name}: selected teacher tensor {tuple(t.shape)} != student {tuple(p.shape)}")
             new[name] = t.to(p.dtype)
         self.encoder.load_state_dict(new, strict=True)
+
+
+class LinearTransform(nn.Module):
+    """Per-layer ``hidden x hidden`` linear map of a shared layer's output, identity-initialised."""
+
+    def __init__(self, hidden: int):
+        super().__init__()
+        self.lin = nn.Linear(hidden, hidden)
+        with torch.no_grad():
+            self.lin.weight.copy_(torch.eye(hidden))
+            self.lin.bias.zero_()
+
+    def forward(self, x: torch.Tensor, position_ids: torch.Tensor | None = None) -> torch.Tensor:
+        return self.lin(x)
+
+
+class GridDWConvTransform(nn.Module):
+    """Per-layer 3x3 depthwise convolution over each image's patch grid (MiniViT's MLP transformation),
+    identity-initialised. Patches are placed on their ``(x, y)`` grid from ``position_ids``; padding stays as is."""
+
+    def __init__(self, hidden: int, kernel: int = 3):
+        super().__init__()
+        self.conv = nn.Conv2d(hidden, hidden, kernel, padding=kernel // 2, groups=hidden)
+        with torch.no_grad():
+            self.conv.weight.zero_()
+            self.conv.weight[:, 0, kernel // 2, kernel // 2] = 1.0
+            self.conv.bias.zero_()
+
+    def forward(self, x: torch.Tensor, position_ids: torch.Tensor | None = None) -> torch.Tensor:
+        if position_ids is None:
+            raise ValueError("GridDWConvTransform needs the patch positions (position_ids)")
+        b, n, d = x.shape
+        valid = (position_ids >= 0).all(-1)
+        pos = position_ids.clamp(min=0)
+        w, h = int(pos[..., 0].max()) + 1, int(pos[..., 1].max()) + 1
+        idx = (pos[..., 1] * w + pos[..., 0]).long()[..., None].expand(-1, -1, d)
+        grid = x.new_zeros(b, h * w, d).scatter_add_(1, idx, x * valid[..., None].to(x.dtype))
+        y = self.conv(grid.transpose(1, 2).reshape(b, d, h, w)).reshape(b, d, h * w).transpose(1, 2)
+        return torch.where(valid[..., None], torch.gather(y, 1, idx), x)

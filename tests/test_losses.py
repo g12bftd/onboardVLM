@@ -112,3 +112,55 @@ def test_composite_prefix_and_description():
     _, logs = crit(s, t, prefix="lm_")
     assert set(logs) == {"lm_mse", "lm_cos"}
     assert crit.describe() == "1*mse[TokenFeatureLoss] + 0.5*cos[TokenFeatureLoss]"
+
+
+def test_manifold_distillation_terms():
+    """Hao et al. 2022: zero for identical relations (any widths, any per-token scale), positive otherwise;
+    inter-image term only for equal token counts; relations use the student's unprojected features."""
+    import dataclasses
+
+    import torch
+
+    from onboard_vlm.distill.losses import ManifoldLoss
+    from onboard_vlm.interfaces import StudentVisionOutput, TeacherVisionOutput
+
+    torch.manual_seed(0)
+    t = torch.randn(3 * 16, 32)
+    q, _ = torch.linalg.qr(torch.randn(32, 32))
+    rotated = (t @ q) * torch.rand(t.shape[0], 1).add(0.5)  # same relations: rotation + per-token scale
+    loss = ManifoldLoss(intra=1, inter=1, random=1, num_random=20)
+    teacher = TeacherVisionOutput(tokens=t, image_token_lengths=[16, 16, 16])
+    same = StudentVisionOutput(tokens=rotated, image_token_lengths=[16, 16, 16])
+    assert set(loss.terms(rotated, t, [16, 16, 16])) == {"intra", "inter", "random"}
+    assert float(loss(same, teacher)) < 1e-10
+    other = StudentVisionOutput(tokens=torch.randn(48, 8), image_token_lengths=[16, 16, 16])  # other width: no head needed
+    assert float(loss(other, teacher)) > 1e-3
+    assert "inter" not in loss.terms(t[:30], t[:30], [16, 14])  # unequal token counts: no cross-image term
+    projected = dataclasses.replace(other, tokens=torch.zeros(48, 32), raw_tokens=rotated)  # raw features are used
+    assert float(loss(projected, teacher)) < 1e-10
+    # sum = squared Frobenius norm per relation matrix: grows with the token count, mean does not
+    s16 = ManifoldLoss(intra=1, inter=0, random=0, reduction="sum")(other, teacher)
+    m16 = ManifoldLoss(intra=1, inter=0, random=0)(other, teacher)
+    assert torch.allclose(s16, m16 * 16 * 16, rtol=1e-4)
+
+
+def test_undefined_loss_terms_are_skipped_in_evaluation_and_zero_in_training():
+    """The inter-image term needs equal token counts: on a batch without them it neither contributes nor enters
+    evaluation means, but training still logs the key (every DDP rank must log the same keys)."""
+    import torch
+
+    from onboard_vlm.distill.losses import CompositeLoss
+    from onboard_vlm.interfaces import StudentVisionOutput, TeacherVisionOutput
+
+    torch.manual_seed(0)
+    crit = CompositeLoss([{"name": "token_feature", "label": "cos", "metric": "cosine"},
+                          {"name": "manifold", "label": "inter", "intra": 0, "inter": 1, "random": 0},
+                          {"name": "intermediate_layer", "label": "mid_inter", "mode": "manifold", "intra": 0, "inter": 1, "random": 0}])
+    t = TeacherVisionOutput(torch.randn(30, 8), [16, 14], {3: torch.randn(30, 8)})
+    s = StudentVisionOutput(torch.randn(30, 8), [16, 14], {3: torch.randn(30, 8)})
+    crit.eval()
+    total, logs = crit(s, t)
+    assert set(logs) == {"cos"} and torch.allclose(total, logs["cos"])
+    crit.train()
+    total, logs = crit(s, t)
+    assert set(logs) == {"cos", "inter", "mid_inter"} and float(logs["inter"]) == 0.0 and torch.allclose(total, logs["cos"])

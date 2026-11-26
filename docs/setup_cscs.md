@@ -96,7 +96,7 @@ The script checks the credentials above, then submits one job per step
 |---|---|---|---|
 | `models` | — | Gemma 4 E2B-it + E4B-it at the pinned revisions → `cache/huggingface` | 26 GB |
 | `dl-<benchmark>` ×7 | — | VizWiz, TextVQA, WearVQA, EgoBlind, EgoTextVQA, EgoSchema, CV-Bench → `raw/<benchmark>` | a few hundred GB |
-| `eval-sets` | — | 18 E1/E3 image sets → `raw/eval_sets/<set>` → `processed/eval_sets/<set>` | ~0.1 TB |
+| `eval-sets` | — | 22 E1/E3 image sets → `raw/eval_sets/<set>` → `processed/eval_sets/<set>` | ~0.1 TB |
 | `probe-data` | — | ImageNet-1k train → `raw/imagenet1k`; NYUv2 → `raw/nyuv2` → `processed/eval_sets/nyuv2` | 157 GB |
 | `dl-<source>` ×5 | — | CC12M, Open Images, SA-1B (100 tars), PixMo-Docs + SynthDoG + Cauldron, EPIC-KITCHENS → `raw/<source>` | ~3.2 TB |
 | `bench-extract`, `bench-lmdb` | benchmark downloads | `raw/<benchmark>` → `processed/benchmarks/<benchmark>/<split>.lmdb` | |

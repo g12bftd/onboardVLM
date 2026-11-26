@@ -51,6 +51,10 @@ class DualViewCollator(_RngMixin):
         train: random-resized crop + flip (else the full image, exactly like Gemma's processor).
         crop_scale, crop_ratio, hflip_prob: augmentation parameters (see ``geometry.sample_transform``).
         degradations: ``{op: probability}`` capture degradations (``data.degrade``), train only.
+        mixup_alpha / mixup_prob: consistent mixup (Beyer et al., CVPR 2022, "function matching"): with probability
+            ``mixup_prob`` an image is replaced by ``lam * x_i + (1 - lam) * x_j`` (``lam ~ Beta(alpha, alpha)``, ``j`` a
+            random other image of the batch, same shape in shape-exact batches). Teacher and student see the same mixed
+            pixels, so the student is trained to match the teacher's function, also between images. Train only.
         build_teacher_inputs: also emit Gemma patch inputs (disable when teacher features are cached).
         build_student_view: emit the dense student tensor (logit distillation feeds students through the grafted
             VLM's patch path instead, so it can be disabled there; ``student_images`` is then empty).
@@ -71,6 +75,8 @@ class DualViewCollator(_RngMixin):
         build_student_view: bool = True,
         text_builder: Callable[..., dict[str, torch.Tensor]] | None = None,
         seed: int = 0,
+        mixup_alpha: float = 0.0,
+        mixup_prob: float = 1.0,
     ):
         self.token_budgets = [token_budgets] if isinstance(token_budgets, int) else list(token_budgets)
         bad = set(self.token_budgets) - set(SUPPORTED_TOKEN_BUDGETS)
@@ -85,6 +91,22 @@ class DualViewCollator(_RngMixin):
         self.build_student_view = build_student_view
         self.text_builder = text_builder
         self.seed = seed
+        self.mixup_alpha, self.mixup_prob = float(mixup_alpha), float(mixup_prob)
+
+    def _mixup(self, images: list[torch.Tensor], rng: random.Random) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Consistent mixup over a shape-exact batch (identical pixels for teacher and student)."""
+        perm = list(range(len(images)))
+        rng.shuffle(perm)
+        out = []
+        for i, x in enumerate(images):
+            j = perm[i] if perm[i] != i else perm[(i + 1) % len(perm)]
+            if rng.random() < self.mixup_prob:
+                lam = rng.betavariate(self.mixup_alpha, self.mixup_alpha)
+                x = lam * x + (1.0 - lam) * images[j]
+            out.append(x)
+        # quantise like real pixels, so both views (and any text-side processor) see the same 8-bit image
+        u8 = [(x * 255.0).round().clamp_(0, 255).to(torch.uint8) for x in out]
+        return [to_unit_float(u) for u in u8], u8
 
     def _transform(self, sample: dict[str, Any], budget: int, rng: random.Random) -> tuple[torch.Tensor, TransformParams]:
         img = sample["image"]
@@ -123,6 +145,8 @@ class DualViewCollator(_RngMixin):
         images_u8 = [o[0] for o in out]
         transforms = [o[1] for o in out]
         images = [to_unit_float(im) for im in images_u8]
+        if self.train and self.mixup_alpha > 0 and len(images) > 1 and len({tuple(im.shape) for im in images}) == 1:
+            images, images_u8 = self._mixup(images, rng)
 
         student_images, valid_mask, lengths = pad_dense(images)
         if not self.build_student_view:
