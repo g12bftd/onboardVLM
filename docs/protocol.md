@@ -61,7 +61,10 @@ against every evaluation image (§7) and de-duplicated. No application domain an
 in the default mixture (egocentric frames and benchmark train images: the `general_vision_plus` ablation). Train/val/test splits are a seeded content hash
 assigned by the loader (`corpus_split`: 0.2% val, 0.2% test).
 
-**Batches** (`BucketedBatchSampler`):
+**Batches.** The input recipe is part of the step-by-step build-up ([methods.md](methods.md)): it starts with
+whole images at the processor's geometry and one budget (`input=full280`, `ExactShapeBatchSampler` drawing from the
+mixture), and the recipes below are added only as the evidence supports them (`input=full | aspect | crop`).
+The most complete recipe (`input=crop`, `BucketedBatchSampler`):
 
 * One budget and one processor shape per batch, so there is never any padding. Students see exactly
   what they see at batch size 1 on the device, and CNN and ViT students are trained identically.
@@ -267,7 +270,7 @@ figure) and `scripts/aggregate_results.py` (`tables.tex` with booktabs, `tables.
 ## 10. Limitations and what is not verified here
 
 * Nothing has been run at scale in this repository: no real corpus, no real-weight training, no
-  benchmark numbers. The pipeline is covered by 305 offline tests and CPU dry runs with a tiny
+  benchmark numbers. The pipeline is covered by 309 offline tests and CPU dry runs with a tiny
   random Gemma 4.
 * The lmms-eval bridge is written against lmms-eval 0.7.4's `gemma4` model and registry API, read
   from its source. It has not been run end to end.

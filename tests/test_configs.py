@@ -137,7 +137,7 @@ def test_evaluation_configs_compose(name):
     OmegaConf.to_container(cfg, resolve=True)
 
 
-STUDIES = ["identity", "depth", "width", "init", "grid", "target", "objective", "md_scale", "multiplex"]
+STUDIES = ["identity", "lr", "target", "input", "objective", "md_scale", "mixup", "multiplex", "depth", "width", "init", "grid"]
 
 
 @pytest.mark.parametrize("study", STUDIES)
@@ -158,9 +158,15 @@ def test_study_launcher_names_are_the_run_ids(study):
         assert cfg.run_id == f"{name}_s0", (cfg.run_id, name)
     assert all(f"_{_compose(ln.split('|')[1].split()).teacher.key}_" in ln.split("|")[0] for ln in lines)  # teacher in the name
     if study == "target":  # the target space x VLM design: vision tokens, E2B's and E4B's LM-input space
-        assert {(ln.split("|")[0].split("_")[1], ln.split("|")[0].split("_")[3]) for ln in lines} == {("e2b", "fmV"), ("e2b", "fm"), ("e4b", "fm")}
+        got = {(c.teacher.key, c.objective_name) for c in (_compose(ln.split("|")[1].split()) for ln in lines)}
+        assert got == {("e2b_it", "mseV"), ("e2b_it", "mse"), ("e4b_it", "mse")}
     if study == "objective":  # every objective of the literature study, one at a time
-        assert {_compose(ln.split("|")[1].split()).objective_name.split("_w")[0] for ln in lines} == {"fm", "md", "fm_md", "fm_fmL", "fm_mdL"}
+        assert {_compose(ln.split("|")[1].split()).objective_name.split("_w")[0] for ln in lines} == {"mse", "fm", "md", "fm_md", "fm_fmL", "fm_mdL"}
+    if study not in ("input", "mixup"):  # the ladder starts from the simplest recipe: whole images, one budget, no mixup
+        for ln in lines:
+            cfg = _compose(ln.split("|")[1].split())
+            assert cfg.input_name == "full280" and cfg.data_module.sampling.mode == "full" and list(cfg.train_budgets) == [280]
+            assert float(cfg.data_module.collator.get("mixup_alpha", 0.0)) == 0.0
 
 
 @pytest.mark.parametrize("objective", sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(CFG, "objective", "*.yaml"))))
@@ -178,7 +184,7 @@ def test_objectives_build_their_losses(objective):
     assert (cfg["layer_map"] == "auto") == uses_layers
     relation_only = uses_layers and all(t.get("mode") == "manifold" for t in vc if t["name"] == "intermediate_layer")
     assert cfg["task"]["adapter"].get("layer_heads", True) is (not relation_only)
-    assert cfg["data_module"]["collator"]["mixup_alpha"] == 1.0
+    assert cfg["data_module"]["collator"]["mixup_alpha"] == 0.0 and cfg["input_name"] == "full280"  # the simplest recipe
 
 
 def test_study_launcher_keeps_e2b_and_e4b_runs_apart():
@@ -193,4 +199,4 @@ def test_study_launcher_keeps_e2b_and_e4b_runs_apart():
     assert len(names["e2b"]) == len(names["gemma4_e4b"]) == 6 and not names["e2b"] & names["gemma4_e4b"]
     only = subprocess.run(["bash", sh, "--study", "objective", "--only", "*_fm_mx*", "--list"], capture_output=True, text=True, env=env,
                           check=True).stdout.split()
-    assert [ln.split("|")[0] for ln in only if "|" in ln] == ["lit_e2b_it_fm_mx0.0_L8_D384_x1-none", "lit_e2b_it_fm_mx1.0_L8_D384_x1-none"]
+    assert [ln.split("|")[0] for ln in only if "|" in ln] == ["lit_e2b_it_full280_fm_mx0.0_lr0.001_L8_D768_x1-none"]

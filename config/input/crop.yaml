@@ -1,0 +1,9 @@
+# @package _global_
+# Input recipe 3 = recipe 2 + scale augmentation: random crops of 35-100% of the largest crop of the batch's aspect
+# (Inception-style crops; the same crop for teacher and student). Question: does seeing more, different views of
+# the corpus help, at equal images seen?
+input_name: crop
+train_budgets: ${input_domain.budgets}
+data_module:
+  sampling: {mode: crop}
+  collator: {crop_scale: [0.35, 1.0]}

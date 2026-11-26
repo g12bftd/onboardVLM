@@ -1,0 +1,8 @@
+# @package _global_
+# Input recipe 1 = recipe 0 + every token budget of the input domain (70 ... 1120; each image gets one per epoch, equal
+# shares). Still whole images at their native aspect ratio. Question: does training at 280 tokens alone transfer to the
+# other budgets (E1 per budget), or must every budget be trained?
+input_name: full
+train_budgets: ${input_domain.budgets}
+data_module:
+  sampling: {mode: full}

@@ -338,11 +338,27 @@ class ExactShapeBatchSampler(Sampler[list[tuple]]):
         num_replicas: int | None = None,
         rank: int | None = None,
         drop_uneven: bool | None = None,
+        lengths: Sequence[int] | None = None,
+        weights: Sequence[float] | None = None,
+        num_samples: int | None = None,
     ):
+        """``lengths`` / ``weights`` / ``num_samples`` (training on full images from a weighted mixture): each epoch
+        draws ``num_samples`` images, every one from component ``c`` with probability ``weights[c]`` (uniformly without
+        replacement within a component, as :class:`BucketedBatchSampler`), then batches them by exact shape.
+        Without them, every image is used once per epoch."""
         import numpy as np
 
         from onboard_vlm.geometry import target_size
 
+        if (weights is None) != (num_samples is None) or (weights is not None and lengths is None):
+            raise ValueError("a mixture needs lengths, weights and num_samples together")
+        if weights is not None:
+            w = np.asarray(weights, dtype=np.float64)
+            if len(w) != len(lengths) or (w < 0).any() or w.sum() <= 0 or sum(lengths) != len(sizes):
+                raise ValueError(f"bad mixture: weights {list(w)}, lengths {list(lengths)}, {len(sizes)} sizes")
+            self.mix = (np.asarray(lengths, dtype=np.int64), w / w.sum(), int(num_samples))
+        else:
+            self.mix = None
         self.budgets = [int(b) for b in budgets]
         bw = np.asarray(budget_weights if budget_weights is not None else [1.0] * len(self.budgets), dtype=np.float64)
         self.budget_probs = bw / bw.sum()
@@ -363,15 +379,34 @@ class ExactShapeBatchSampler(Sampler[list[tuple]]):
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
+    def _draw(self, rng) -> "np.ndarray":
+        """The images of this epoch: all of them, or ``num_samples`` drawn from the mixture."""
+        import numpy as np
+
+        if self.mix is None:
+            return np.arange(self.n)
+        lengths, probs, n = self.mix
+        offsets = np.concatenate([[0], np.cumsum(lengths)[:-1]])
+        comps = rng.choice(len(lengths), size=n, p=probs)
+        out = []
+        for c in np.unique(comps):
+            k = int((comps == c).sum())
+            reps = -(-k // int(lengths[c]))  # whole passes when a component is drawn more often than its size
+            perm = np.concatenate([rng.permutation(int(lengths[c])) for _ in range(reps)])[:k]
+            out.append(perm + offsets[c])
+        return np.concatenate(out)
+
     def _batches(self) -> list[list[tuple]]:
         import numpy as np
 
         rng = np.random.default_rng([self.seed, self.epoch])
-        assign = (rng.choice(len(self.budgets), size=self.n, p=self.budget_probs) if len(self.budgets) > 1
-                  else np.zeros(self.n, dtype=np.int64))
+        items = self._draw(rng)
+        assign = (rng.choice(len(self.budgets), size=len(items), p=self.budget_probs) if len(self.budgets) > 1
+                  else np.zeros(len(items), dtype=np.int64))
         groups: dict[tuple[int, int, int], list[int]] = {}
-        for i in range(self.n):
-            b = self.budgets[assign[i]]
+        for j, i in enumerate(items):
+            i = int(i)
+            b = self.budgets[assign[j]]
             s = self.shapes[b][i]
             if s is not None:
                 groups.setdefault((b, *s), []).append(i)

@@ -1,0 +1,9 @@
+# @package _global_
+# Input recipe 2 = recipe 1 + aspect-ratio coverage: every batch has a sampled aspect ratio (half deployment-camera
+# aspects, half log-uniform over the domain) and each image is cut to its largest crop of that aspect (no zoom:
+# crop_scale [1, 1]). Question: do native aspect ratios cover the domain, or must it be sampled (E1 per aspect bin)?
+input_name: aspect
+train_budgets: ${input_domain.budgets}
+data_module:
+  sampling: {mode: crop}
+  collator: {crop_scale: [1.0, 1.0]}

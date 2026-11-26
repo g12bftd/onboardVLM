@@ -1,0 +1,9 @@
+# @package _global_
+# Input recipe 0, the simplest: every training image whole, at Gemma 4's own processor geometry (its native aspect
+# ratio, no crop, no flip, no mixup) and at one token budget, 280 (Gemma 4's default). Teacher and student see exactly
+# what the processor gives the VLM. Batches group images of identical processor shape (no padding). The mixture of
+# the corpus is unchanged (samples_per_epoch drawn by weight). docs/methods.md ("Building up").
+input_name: full280
+train_budgets: [280]
+data_module:
+  sampling: {mode: full}

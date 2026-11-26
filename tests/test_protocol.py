@@ -94,6 +94,28 @@ def test_exact_shape_sampler_groups_and_excludes():
     assert sorted(ids) == [0, 1, 2, 3, 4]  # ranks partition the evaluation set
 
 
+def test_full_image_sampler_draws_the_mixture():
+    """The simplest input recipe (whole images, processor geometry) keeps the corpus mixture: samples_per_epoch images
+    drawn by component weight, batched by exact shape, a new draw every epoch, identical plan on every rank."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    sizes = [(int(h), int(w)) for h, w in rng.integers(200, 900, size=(300, 2))]
+    kw = dict(shuffle=True, seed=0, lengths=[200, 100], weights=[0.2, 0.8], num_samples=2000)
+    s = ExactShapeBatchSampler(sizes, [280], 8960, **kw)
+    batches = list(s)
+    idx = np.array([x[1] for b in batches for x in b])
+    assert len(idx) == 2000 and abs((idx >= 200).mean() - 0.8) < 0.03  # the small component is repeated, by weight
+    assert all(len({(x[3], x[4]) for x in b}) == 1 and all(x[0] == "full" for x in b) for b in batches)
+    assert all(target_size(*sizes[x[1]], 280) == (x[3], x[4]) for b in batches for x in b)
+    s.set_epoch(1)
+    assert sorted(x[1] for b in s for x in b) != sorted(idx.tolist())
+    ranks = [list(ExactShapeBatchSampler(sizes, [280], 8960, num_replicas=2, rank=k, **kw)) for k in (0, 1)]
+    assert len(ranks[0]) == len(ranks[1]) and not {tuple(map(tuple, b)) for b in ranks[0]} & {tuple(map(tuple, b)) for b in ranks[1]}
+    with pytest.raises(ValueError):
+        ExactShapeBatchSampler(sizes, [280], 8960, lengths=[200, 100], weights=[1, 1])
+
+
 def test_collator_produces_padding_free_batches():
     ds = SyntheticVQADataset(6, max_side=500)
     coll = DualViewCollator(train=True, crop_scale=(0.35, 1.0))
@@ -214,6 +236,19 @@ def test_literature_objective_runs_end_to_end(tmp_path):
     assert train and all(r.get("train/lm_fm_cos") and r.get("train/vis_mdL_random") for r in train)
     stats = json.load(open(next(tmp_path.glob("students/*/student_stats.json"))))
     assert stats["parameters"] < stats["parameters_with_repeats"]  # shared weights counted once
+
+
+def test_simplest_recipe_trains_on_whole_images_at_one_budget(tmp_path):
+    """Step 0 of the ladder: whole images at the processor's geometry, 280 tokens only, one MSE term."""
+    import csv as _csv
+
+    out = _run("run_distill.py", "+experiment=debug/dryrun_embedding", "student=gemma4_shrink", "student.num_hidden_layers=2",
+               "student.hidden_size=24", "+input=full280", "+objective=mse", "~layer_map", "+layer_map={}",
+               "input_domain={budgets: [70, 140, 280], max_aspect: 4.0}", "trainer.max_steps=2", f"output_root={tmp_path}")
+    rows = [r for r in _csv.DictReader(open(next(tmp_path.glob("logs/*/*/metrics.csv")))) if r.get("train/total")]
+    assert rows and all(abs(float(r["train/total"]) - float(r["train/lm_mse"])) < 1e-6 for r in rows)
+    log = "\n".join(p.read_text() for p in tmp_path.glob("logs/**/*.log")) + out
+    assert "full images at the processor's own geometry" in log or rows
 
 
 def test_vision_space_objective_trains_on_vision_tokens_and_monitors_lm_space(tmp_path):

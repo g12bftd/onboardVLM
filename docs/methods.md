@@ -139,67 +139,74 @@ The four Gemma 4 checkpoints (E2B, E4B, base and `-it`) share the vision tower b
 E4B) and the language model that reads the result. So "distilling E2B's and E4B's ViT" means distilling one function
 into one of three targets:
 
-* **vision space** (`objective=fmV`): the 768-d tokens themselves, RMS-normalised MSE + cosine. One student for
-  both VLMs.
-* **E2B's LM-input space** (`teacher=gemma4_e2b objective=fm`): what E2B's language model reads.
-* **E4B's LM-input space** (`teacher=gemma4_e4b objective=fm`).
+* **vision space** (`objective=mseV`): `RMSNorm(token)`, what both projections read. One student for both VLMs.
+* **E2B's LM-input space** (`teacher=gemma4_e2b objective=mse`): `W_E2B · RMSNorm(token)`, what E2B's LM reads.
+* **E4B's LM-input space** (`teacher=gemma4_e4b objective=mse`).
 
-Every student is then evaluated in **both** VLMs. That gives a 3 × 2 table: does matching in one LM's input space
-over-fit to that LM, and does one student serve both? The teacher key is part of every run name
-(`lit_e2b_it_…`, `lit_e4b_it_…`). Evaluations in the other VLM go to `eval_vlm_<key>/` of each export, and
-`plot_study.py --vlm <key>` reads them.
+The three differ only by the linear map applied before the error. Every student is evaluated in **both** VLMs:
+does matching in one LM's input space over-fit to that LM, and does one student serve both? The teacher key is in
+every run name (`lit_e2b_it_…`, `lit_e4b_it_…`). Evaluations in the other VLM go to `eval_vlm_<key>/` of each export,
+and `plot_study.py --vlm <key>` reads them.
 
-## Building up: the order of experiments
+## Building up: from the simplest recipe, one ingredient at a time
 
-Each step adds one ingredient to the previous one at equal data and compute, so every gain is attributable. Steps
-3–5 use the target that step 2 selects. If both LM spaces win in their own VLM, run steps 3–5 for E2B first (the
-cheaper VLM to evaluate) and repeat the winning recipe for E4B.
+The first run is the simplest recipe that answers the question at all. Every later step adds **one** ingredient to
+the recipe the evidence so far supports, at equal data, images seen and compute, with 3 seeds. An ingredient enters
+the recipe only if it improves held-out fidelity (E1) or the general suite (E3) beyond the seed spread, or fixes a
+weakness the evaluation showed. Otherwise the simpler recipe stays. The run that a study compares against is the
+current recipe itself (the same run name), so it is trained once and shared.
 
-| step | study | runs (seeds) | question | needs |
+**The simplest recipe** (`+experiment=lit/base`, all defaults):
+
+| part | choice | why it is the simplest |
+|---|---|---|
+| student | 8 layers × 768 from the teacher (every other layer kept, nothing else changed) | no width-selection heuristic, no new parameters |
+| input | `input=full280`: each image whole, at Gemma 4's own processor geometry (native aspect ratio) and 280 tokens (Gemma 4's default) | exactly what the VLM sees: no crop, flip, aspect or budget sampling, no mixup |
+| objective | `objective=mse`: one MSE term on the output tokens where the LM reads them | "replicate the teacher's output tokens", nothing else |
+| data | the general corpus (`general_vision_lite`), 5M images seen | fixed for every step |
+| optimisation | AdamW without weight decay (decay would pull the inherited weights towards 0 even at zero loss), 5% warmup, cosine decay, clip 1.0; learning rate chosen in step 2 | no regulariser; the one hyperparameter set before the ladder |
+
+| step | `--study` | runs (seeds) | question | what decides it |
 |---|---|---|---|---|
-| 0 | `references` | teacher in E2B and E4B: general suite, blind floor, E2 probes | the ceiling and the floor of every comparison | none |
-| 1 | `identity --seeds 0` | 16 × 768 from the teacher (the teacher itself) | does training keep the teacher exact (fidelity 1 at every point)? A pipeline check | 0 |
-| 2 | `target` | output matching without mixup, into vision / E2B / E4B space (3 × 3) | the baseline and where to match | 1 |
-| 3 | `objective --only '*_fm_mx*'` | + consistent mixup (2 × 3; the no-mixup run is step 2's) | (1) Beyer et al.: does function matching help? | 2 |
-| 4a | `md_scale --seeds 0` | + relations, 4 scales (4 × 1) | how much weight relations get (held-out selection) | 3 |
-| 4b | `objective --md-scale <s>` | + relations (MD, FM+MD), + intermediate layers (FM@L, MD@L) | (2), (3) Hao et al., FitNets | 4a |
-| 5 | `multiplex --objective <best>` | weight sharing, 6 students | (4) MiniViT: depth for free at fixed parameters? | 4b |
-| 6 | `depth`, `width`, `grid` | the size axis with the final recipe | how small can the student get? | 5 |
+| 0 | `references` | none: teacher in E2B and E4B (general suite, blind floor, probes, mini-benchmarks) | the ceiling and the floor of every comparison | none |
+| 1 | `identity` | the simplest recipe at 16 × 768 = the teacher (1) | does training keep the teacher exact? A pipeline check | val fidelity stays at 1 |
+| 2 | `lr` | the simplest recipe at lr {1e-4, 3e-4, 1e-3} (1) | a learning rate that neither under-trains nor destroys the inherited weights | val fidelity (val split only) |
+| 3 | `target` | vision / E2B / E4B target, each evaluated in both VLMs (3 × 3) | where to match; can one student serve both VLMs? | E3 in both VLMs |
+| 4 | `input` | full280 → full (every budget) → aspect (aspect coverage) → crop (scale augmentation) (4 × 3) | does the input recipe need more than what the VLM sees? | E1 per budget and aspect bin, E3 |
+| 5 | `objective` | mse → fm (+ cosine) → md, fm_md (relations, Hao et al.) → fm_fmL, fm_mdL (+ intermediate layers) (6 × 3; `md_scale` first, 1 seed) | do the literature objectives help? | E1, E3 |
+| 6 | `mixup` | the recipe without / with consistent mixup (Beyer et al.) (2 × 3) | does function matching on mixed images help? | E1, E3 |
+| 7 | `multiplex` | weight sharing, 6 students (6 × 3) | MiniViT: depth for free at fixed parameters? | E3 vs unique parameters |
+| 8 | `depth`, `width`, `grid` | the size axis with the final recipe | how small can the student get? | E3 vs params / latency |
 
-Step 0 of a teacher-initialised student is the untrained, truncated and narrowed teacher. `--lmms-steps first,last`
-evaluates that "no training" floor on the general suite too (once is enough: it does not depend on the seed).
+Before each step, set the flags to what the previous steps selected: `--lr`, `--input`, `--objective`,
+`--md-scale` (and `--teacher` / `--eval-vlms` after step 3). If step 3 shows the vision-space target is as good as
+the LM-space ones in both VLMs, steps 4–8 run once with `--objective mseV` (or its later variants) for both VLMs.
+Otherwise they run for E2B first, and the selected recipe is repeated for E4B (`--teacher gemma4_e4b`).
+
+The order of steps 4–6 is a choice: ingredients can interact. The final recipe is therefore also compared against
+the simplest recipe directly, and every ingredient is removed from it once (a leave-one-out check), so a gain
+that only appeared in combination is still visible.
+
+Step 0 of a teacher-initialised student is the untrained, truncated teacher. `--lmms-steps first,last` also
+evaluates that "no training" floor on the general suite (once is enough: it does not depend on the seed).
 
 ```bash
 source scripts/paths.sh
 S=scripts/slurm/submit_shrink_study.sh
 bash $S --account <project> --study references --eval-vlms e2b,e4b
 bash $S --account <project> --study identity --seeds 0
-bash $S --account <project> --study target
-bash $S --account <project> --study objective --only '*_fm_mx*'
-bash $S --account <project> --study md_scale --seeds 0
-bash $S --account <project> --study objective --md-scale <chosen>
-bash $S --account <project> --study multiplex --objective <best>
+bash $S --account <project> --study lr --seeds 0
+bash $S --account <project> --study target --lr <chosen>
+bash $S --account <project> --study input --lr <chosen> [--objective mseV]
+bash $S --account <project> --study md_scale --seeds 0 --lr <chosen> --input <chosen>
+bash $S --account <project> --study objective --lr <chosen> --input <chosen> --md-scale <chosen>
+bash $S --account <project> --study mixup --lr <chosen> --input <chosen> --objective <chosen>
+bash $S --account <project> --study multiplex --lr <chosen> --input <chosen> --objective <chosen>
 ```
 
-Add `--teacher gemma4_e4b` to repeat a study in E4B's space and `--eval-vlms e2b,e4b` to evaluate its students in
-both VLMs. `--dry-run` prints what would be submitted, and `--list` prints the run names and their overrides.
-
-Every literature run uses `+experiment=lit/base`:
-
-* the same student (`--student "8 384"`, teacher-initialised);
-* the same data (`general_vision_lite`, general-purpose);
-* the same images seen (5M), schedule and evaluation;
-* one factor changes per comparison.
-
-Run names spell out every factor:
-`lit_<teacher key>_<objective>[_w<md scale>]_mx<mixup alpha>_L<layers>_D<width>_x<k>-<transform>`.
-
-| study | runs | question |
-|---|---|---|
-| `target` | FM w/o mixup into vision / E2B / E4B space, each evaluated in both VLMs | where to match, and does one student serve both |
-| `md_scale` | FM+MD, scale ∈ {1, 10, 100, 1000} | how strongly to weight relations (held-out selection) |
-| `objective` | FM w/o mixup, FM, MD, FM+MD, FM+FM@layers, FM+MD@layers | which of (1), (2), (3) keeps the most general ability; does mixup matter |
-| `multiplex` | 8×1, 16×2 {none, linear, dwconv}, 8×2 linear, 4×1 | does sharing with a transformation buy depth at a fixed parameter count (4) |
+`--dry-run` prints what would be submitted, and `--list` prints the run names and their overrides. Run names spell
+out every factor:
+`lit_<teacher key>_<input>_<objective>[_w<md scale>]_mx<mixup alpha>_lr<lr>_L<layers>_D<width>_x<k>-<transform>`.
 
 Each training job is followed by `scripts/trajectory_eval.py`:
 

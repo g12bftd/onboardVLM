@@ -1,0 +1,11 @@
+# @package _global_
+# The simplest objective on the 768-d *vision* tokens: one term, the mean squared error of RMS-normalised tokens, i.e.
+# of RMSNorm(token), which is what embed_vision feeds its projection. No projection, so one target for E2B and E4B
+# (they share the vision tower; only the projection and the LM differ). The LM-space error is logged with weight 0.
+objective_name: mseV
+layer_map: {}
+criterion:
+  - {name: token_feature, label: mse, weight: 0.0, metric: mse, normalize: none}
+task:
+  vision_criterion:
+    - {name: token_feature, label: mseV, weight: 1.0, metric: mse, normalize: rms}

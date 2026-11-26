@@ -59,9 +59,11 @@ TRAIN_PANELS = [("train/total", "training loss (total)"), ("diag/grad_norm", "gr
                 ("lr", "learning rate"), ("diag/images_per_s", "throughput (images / s)")]
 
 NAMES = [  # experiment names of the studies -> label fields
-    re.compile(r"shrink_(?:(?P<teacher>e\db_(?:it|base))_)?L(?P<L>\d+)_D(?P<D>\d+)_(?P<init>[a-z]+)_(?P<ls>[^-]+)-(?P<ws>.+)$"),
-    re.compile(r"lit_(?:(?P<teacher>e\db_(?:it|base))_)?(?P<obj>[A-Za-z_]+?)(?:_w(?P<w>[\d.e+-]+))?_mx(?P<mx>[\d.]+)"
-               r"_L(?P<L>\d+)_D(?P<D>\d+)_x(?P<k>\d+)-(?P<tr>[a-z]+)$"),
+    re.compile(r"shrink_(?:(?P<teacher>e\db_(?:it|base))_)?(?:(?P<inp>full280|full|aspect|crop)_(?P<obj>[A-Za-z_]+?)"
+               r"(?:_w(?P<w>[\d.e+-]+))?_lr(?P<lr>[\d.e+-]+)_)?L(?P<L>\d+)_D(?P<D>\d+)_(?P<init>[a-z]+)_(?P<ls>[^-]+)-(?P<ws>.+)$"),
+    re.compile(r"lit_(?:(?P<teacher>e\db_(?:it|base))_)?(?:(?P<inp>full280|full|aspect|crop)_)?(?P<obj>[A-Za-z_]+?)"
+               r"(?:_w(?P<w>[\d.e+-]+))?_mx(?P<mx>[\d.]+)(?:_lr(?P<lr>[\d.e+-]+))?_L(?P<L>\d+)_D(?P<D>\d+)"
+               r"_x(?P<k>\d+)-(?P<tr>[a-z]+)$"),
 ]
 SEED = re.compile(r"_(?P<tag>s\d+(?:_i\d+_d\d+)?)$")
 E3 = {"textvqa": ("vqa_accuracy", "TextVQA val (VQA acc.)"), "cvbench": ("cv_bench_overall", "CV-Bench (overall)"),
@@ -494,7 +496,7 @@ def main() -> None:
     p.add_argument("--runs", nargs="+", required=True, help="experiment-name globs (all seeds of each are used)")
     p.add_argument("--out", required=True)
     p.add_argument("--label", default="{L} layers x {D}", help="series label from the fields of the name: L, D, init, ls, ws "
-                   "(shrink_*) or obj, w, mx, L, D, k, tr (lit_*), and teacher (both)")
+                   "(shrink_*) or obj, w, mx, L, D, k, tr (lit_*), and teacher, inp, lr (both)")
     p.add_argument("--order", default=None, help="numeric field that orders the series (one hue, light -> dark)")
     p.add_argument("--teacher_dir", default=None, help="trajectory_eval.py --teacher output (reference lines)")
     p.add_argument("--vlm", default=None, help="E3 / general suite measured in this VLM (e2b_it | e4b_it): a run distilled for "

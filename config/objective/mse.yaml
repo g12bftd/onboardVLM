@@ -1,0 +1,10 @@
+# @package _global_
+# The simplest objective: one term, the mean squared error between student and teacher output tokens where the language
+# model reads them (after the frozen embed_vision: scale-free RMSNorm + projection). "Replicate the teacher's output
+# tokens for the same image", nothing else. docs/methods.md ("Building up").
+objective_name: mse
+layer_map: {}
+criterion:
+  - {name: token_feature, label: mse, weight: 1.0, metric: mse, normalize: none}
+task:
+  vision_criterion: null

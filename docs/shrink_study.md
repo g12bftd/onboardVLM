@@ -2,7 +2,8 @@
 
 The first systematic look at the distillation: take Gemma 4's own vision encoder (16 layers x 768, 12 heads,
 ~167M parameters with its 2 x 10,240 x 768 position table), make it smaller along one axis at a time,
-distil it with the main objective, and measure everything over training time.
+distil it with the recipe the ladder of [methods.md](methods.md) selected (by default the simplest one: whole
+images at 280 tokens, one MSE term), and measure everything over training time.
 
 ## 1. The student: the teacher, made smaller (`gemma4_shrink`)
 
@@ -18,14 +19,15 @@ distil it with the main objective, and measure everything over training time.
     and MLP units. The output head puts the kept channels back at their teacher positions (x sqrt(768 / width),
     undoing the pooler's sqrt(width)).
   * `random`: transformers' initialiser, seeded by `init_seed`.
-* `layer_map: auto`: intermediate supervision of 3 student layers spread over its depth (the last included),
-  each against the teacher layer it was initialised from (or at the same relative depth).
+* `layer_map: auto` (objectives with intermediate layers only): 3 student layers spread over its depth (the last
+  included), each against the teacher layer it was initialised from (or at the same relative depth).
 
 ## 2. Studies (`scripts/slurm/submit_shrink_study.sh --study ...`)
 
-Every run uses `+experiment=shrink/base`: the main objective (LM-input-space cosine + 3 intermediate
-layers), the same corpus, budgets, schedule and compute (10 epochs x 500k = 5M image samples). One factor
-changes per study.
+Every run uses `+experiment=shrink/base`: the same recipe (`--input`, `--objective`, `--lr`; default the simplest:
+whole images at 280 tokens, one MSE term in the LM-input space, no mixup), corpus, schedule and compute (10 epochs x
+500k = 5M image samples). One factor changes per study. The identity anchor is `--study identity` (the same recipe
+at 16 x 768).
 
 | study | configurations | question |
 |---|---|---|
@@ -38,7 +40,7 @@ changes per study.
 Run names include the teacher whose LM-input space is distilled into (`shrink_e2b_it_L8_D768_teacher_uniform-uniform`;
 `--teacher gemma4_e4b` gives `shrink_e4b_it_...`), so E2B and E4B runs never collide.
 
-The same launcher runs the literature studies (`--study target | md_scale | objective | multiplex`: function matching,
+The same launcher runs the literature studies (`--study lr | target | input | objective | md_scale | mixup | multiplex`: function matching,
 manifold distillation, intermediate layers, weight multiplexing), described in [methods.md](methods.md).
 
 Run `identity` and `depth` first; `grid` (27 runs with 3 seeds) after the first results.

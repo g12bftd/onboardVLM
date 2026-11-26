@@ -1,16 +1,21 @@
 # @package _global_
-# Literature study (docs/methods.md): one student, one compute budget, one data stream; the objective, the mixup and
-# the weight sharing are the only factors that change between runs.
-#   (1) function matching on output tokens (Beyer et al., CVPR 2022)        objective=fm
-#   (2) manifold distillation on output tokens (Hao et al., NeurIPS 2022)   objective=md | fm_md
-#   (3) (1) or (2) on intermediate layers                                   objective=fm_fmL | fm_mdL
-#   (4) weight multiplexing (Zhang et al., CVPR 2022)                       student.share_every=2 student.share_transform=linear|dwconv|none
-#   python -u run_distill.py +experiment=lit/base objective=fm_mdL student.num_hidden_layers=8 student.hidden_size=384 seed=0
-# teacher=gemma4_e4b distils into E4B's LM-input space (same vision tower, other embed_vision); the run name says which.
-experiment_name: lit_${teacher.key}_${objective_name}_mx${data_module.collator.mixup_alpha}_L${student.num_hidden_layers}_D${student.hidden_size}_x${student.share_every}-${student.share_transform}
+# Controlled studies (docs/methods.md, "Building up"): one student, one data stream, one compute budget; each study
+# changes one factor of the recipe. The defaults are the simplest recipe (step 0 of the ladder):
+#   input      full280: whole images at the processor's geometry, 280 tokens, no crop / flip / mixup   (config/input/)
+#   objective  mse: one MSE term on the output tokens in the LM-input space                           (config/objective/)
+#   student    8 layers x 768 from the teacher (layers removed, nothing else changed), no weight sharing
+# and each later ingredient is one override:
+#   input=full | aspect | crop                     every budget; aspect coverage; scale augmentation
+#   objective=mseV | fm | md | fm_md | fm_fmL ...  vision-space target; + cosine; relations (Hao et al.); layers
+#   data_module.collator.mixup_alpha=1.0           consistent mixup (Beyer et al.)
+#   student.share_every=2 student.share_transform=linear|dwconv|none   weight multiplexing (MiniViT)
+#   teacher=gemma4_e4b                             distil into E4B's LM-input space (same vision tower)
+#   python -u run_distill.py +experiment=lit/base seed=0
+experiment_name: lit_${teacher.key}_${input_name}_${objective_name}_mx${data_module.collator.mixup_alpha}_lr${task.optimizer.lr}_L${student.num_hidden_layers}_D${student.hidden_size}_x${student.share_every}-${student.share_transform}
 validate_at_start: true         # step 0 of every learning curve
 defaults:
-  - /objective: fm              # after the criterion group, so its terms replace the criterion list
+  - /input: full280             # after the data_module group, so its sampling settings apply
+  - /objective: mse             # after the criterion group, so its terms replace the criterion list
   - override /task: embedding_distillation
   - override /criterion: embedding_tokens
   - override /teacher: gemma4_e2b
@@ -18,13 +23,15 @@ defaults:
   - override /data_module: general_vision_lite
 student:
   num_hidden_layers: 8
-  hidden_size: 384
+  hidden_size: 768
   share_every: 1
   share_transform: none         # set with share_every > 1
 data_module:
   collator:
-    mixup_alpha: 1.0            # Beyer et al.: mixup with lambda ~ U(0, 1) = Beta(1, 1), the same mixed image for both models
+    mixup_alpha: 0.0            # 1.0 = Beyer et al.'s consistent mixup (lambda ~ U(0, 1)); a later step of the ladder
     mixup_prob: 1.0
+task:
+  optimizer: {weight_decay: 0.0}   # AdamW's decay pulls inherited teacher weights towards 0 even at zero loss: off in the simplest recipe
 trainer:
   max_epochs: 10                # 10 x 500k = 5M image samples per run (equal for every run of the study)
   val_check_interval: 0.5       # 20 validation points + step 0

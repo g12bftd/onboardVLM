@@ -336,11 +336,14 @@ class DistillDataModule(pl.LightningDataModule):
             log.info("     train batches/epoch per rank: %d | mean images per batch by budget: %s", len(sampler),
                      ", ".join(f"{b}: {v:.1f}" for b, v in ebs.items()))
         else:
-            if self.mix_weights is not None:
-                raise ValueError("sampling.mode=full uses every image once per epoch; mixture weights are not supported")
+            mix = {}
+            if self.mix_weights is not None:  # the same mixture as crop mode: samples_per_epoch images drawn by weight
+                mix = dict(lengths=[len(d) for d in self.train_parts], weights=self.mix_weights,
+                           num_samples=self.samples_per_epoch or len(self.train_set))
             sampler = ExactShapeBatchSampler(dataset_sizes(self.train_set), budgets, tokens, budget_weights=cfg.get("budget_weights"),
-                                             shuffle=True, domain=self.domain, seed=self.seed)
-            log.info("     train batches/epoch per rank: %d (full images; %s excluded outside the input domain)", len(sampler), sampler.excluded)
+                                             shuffle=True, domain=self.domain, seed=self.seed, **mix)
+            log.info("     train batches/epoch per rank: %d (full images at the processor's own geometry, no crops%s; "
+                     "%s excluded outside the input domain)", len(sampler), ", mixture by weight" if mix else "", sampler.excluded)
         return DataLoader(ShapedDataset(self.train_set), batch_sampler=sampler, collate_fn=self.train_collate, **self._loader_kwargs())
 
     def _eval_loaders(self, sets: dict[str, ConcatDataset], split: str) -> list[DataLoader]:
