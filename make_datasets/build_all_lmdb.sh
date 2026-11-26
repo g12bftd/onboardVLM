@@ -16,11 +16,12 @@ python $L/make_egoblind.py --input_path "$RAW_ROOT/egoblind" --video_dir "$RAW_R
   ${EGOBLIND_TRAIN_CSV:+--train_csv "$EGOBLIND_TRAIN_CSV"}
 
 # EgoTextVQA: Outdoor at high (1920x1080) and low (960x540) resolution, Indoor as released.
-python $L/make_egotextvqa.py --subset outdoor --input_path "$RAW_ROOT/egotextvqa" --video_dir "$RAW_ROOT/egotextvqa/videos" \
+# Outdoor videos from the authors' Hugging Face copy; Indoor videos are EgoSchema clips (README of EgoTextVQA).
+python $L/make_egotextvqa.py --subset outdoor --input_path "$RAW_ROOT/egotextvqa" --video_dir "$RAW_ROOT/egotextvqa/videos/EgoTextVQA-Outdoor" \
   --output_path "$LMDB_ROOT/egotextvqa_outdoor_high" --resize 1920x1080 --num_frames 16
-python $L/make_egotextvqa.py --subset outdoor --input_path "$RAW_ROOT/egotextvqa" --video_dir "$RAW_ROOT/egotextvqa/videos" \
+python $L/make_egotextvqa.py --subset outdoor --input_path "$RAW_ROOT/egotextvqa" --video_dir "$RAW_ROOT/egotextvqa/videos/EgoTextVQA-Outdoor" \
   --output_path "$LMDB_ROOT/egotextvqa_outdoor_low" --resize 960x540 --num_frames 16
-python $L/make_egotextvqa.py --subset indoor --input_path "$RAW_ROOT/egotextvqa" --video_dir "$RAW_ROOT/egotextvqa/videos" \
+python $L/make_egotextvqa.py --subset indoor --input_path "$RAW_ROOT/egotextvqa" --video_dir "$RAW_ROOT/egoschema/videos" \
   --output_path "$LMDB_ROOT/egotextvqa_indoor" --num_frames 16 --max_side 1280
 
 # EgoSchema: 32 segment-centred frames per 3-minute clip; writes subset.lmdb (500) and test.lmdb (5,031).

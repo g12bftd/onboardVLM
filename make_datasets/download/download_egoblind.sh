@@ -18,7 +18,7 @@ status=0
 gdown -c --folder https://drive.google.com/drive/folders/1zW8waLCS_8Ay8kOWpCsvF77IeIG9TzOq -O "$D/train" || status=1
 gdown -c --folder https://drive.google.com/drive/folders/1gLcqwKrJcZ7tTbaBI8aWEhPImRdDsGQx -O "$D/test" || status=1
 # the "video source" file of the README (sources to cite when redistributing); not needed to build the benchmark
-gdown -c --fuzzy https://drive.google.com/file/d/1Wob42tJ95DL1VvKad7BPc5QIlHtiuttI/view -O "$D/video_sources" || true
+gdown -c 1Wob42tJ95DL1VvKad7BPc5QIlHtiuttI -O "$D/video_sources" || true   # a bare file id works with gdown 5 and 6
 if [ "$status" -ne 0 ]; then
   echo "EgoBlind: some Google Drive files did not download (see above). Re-submit later; finished files are kept." >&2
   exit 1

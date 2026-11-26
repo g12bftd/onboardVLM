@@ -112,6 +112,9 @@ step_benchmarks_extract() {
 
 step_benchmarks_lmdb() {
   if [ -f "$LMDB_ROOT/.done" ]; then log "benchmark LMDBs already built (rm $LMDB_ROOT/.done to rebuild)"; return; fi
+  # EgoTextVQA-Indoor videos are EgoSchema clips: all of them must be in the EgoSchema download
+  python -I "$HERE/download/verify_videos.py" --name egotextvqa_indoor --video_dir "$RAW_ROOT/egoschema/videos" \
+    --ids "$RAW_ROOT/egotextvqa/egotextvqa_indoor_annotation.csv" --key video_id
   rm -rf "${LMDB_ROOT:?}"/*  # LMDB writers refuse duplicate keys: always build into an empty directory
   bash "$HERE/build_all_lmdb.sh"
   touch "$LMDB_ROOT/.done"

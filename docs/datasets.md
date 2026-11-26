@@ -33,7 +33,7 @@ Each `make_*.py` accepts `--dry_run` (parse and count only) and `--limit N` (deb
 | TextVQA 0.5.1 | dl.fbaipublicfiles.com/textvqa: `train_val_images.zip`, `test_images.zip`, `TextVQA_0.5.1_{train,val,test}.json` | train 34,602 / val 5,000 / test 5,734 questions | image, question, 10 answers, `question_id`, `image_classes` | same as VizWiz |
 | WearVQA | HF `tonyliao-meta/WearVQA` (OpenReview link of the NeurIPS 2025 D&B paper) | test | image, question, answer(s), `quality_issues`, `domain`, `task_type` | eval only |
 | EgoBlind | GitHub `doc-doc/EgoBlind` (CSVs) + Google Drive (videos) | test (`test.csv`, full: 2,558 answered Q), train (`finetune/train.csv`: 2,746 Q) | 16 frames in `[0, t_q]`, timestamps, 4 answers, `type` | distillation frames and QA (train), eval (test) |
-| EgoTextVQA | GitHub `zhousheng97/EgoTextVQA` (CSVs) + HF `ShengZhou97/EgoTextVQA` or Drive (videos) | test; Outdoor high, Outdoor low, Indoor as separate LMDBs | 16 frames in `[0, t_q]`, answer, `question_type` | eval only (no train split) |
+| EgoTextVQA | GitHub `zhousheng97/EgoTextVQA` (CSVs); videos: Outdoor from HF `ShengZhou97/EgoTextVQA`, Indoor = EgoSchema clips (the HF Indoor folder has 307 truncated / unreachable files) | test; Outdoor high, Outdoor low, Indoor as separate LMDBs | 16 frames in `[0, t_q]`, answer, `question_type` | eval only (no train split) |
 | EgoSchema | GitHub `egoschema/EgoSchema` (questions) + Kaggle `egoschema-public` (videos) | `subset` (500 with answers), `test` (5,031) | 32 frames per clip, 5 options, answer index (`-1` when hidden) | eval only |
 | CV-Bench | HF `nyu-visionx/CV-Bench` | test 2,638 | image, question, choices, answer index, `task`, `source`, prompt | eval only |
 
