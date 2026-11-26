@@ -441,6 +441,31 @@ def test_plot_study_on_synthetic_runs(tmp_path):
     assert {r["series"] for r in rows} == {"4 layers", "8 layers"} and all(r["n_seeds"] == "2" for r in rows)
 
 
+def test_plot_study_draws_the_size_grid_against_its_cost(tmp_path):
+    """A depth x width grid: heatmaps and the accuracy-vs-cost figure (one line per width, Pareto front), from the
+    parameters and GMACs every export records."""
+    pytest.importorskip("matplotlib")
+    import csv as _csv
+
+    for L in (2, 4, 8):
+        for D in (256, 768):
+            for s in (0, 1):
+                rid = f"lit_e2b_it_full280_mse_mx0.0_lr0.001_L{L}_D{D}_x1-none_s{s}"
+                d = tmp_path / "trajectories" / rid / "step_00000100"
+                (d / "eval" / "e1").mkdir(parents=True)
+                json.dump({"step": 100, "images_seen": 800}, open(d / "trajectory.json", "w"))
+                params = L * 12 * D * D + 2 * 10240 * D
+                json.dump({"parameters": params, "gmacs_280": params * 2520 / 1e9}, open(d / "student_stats.json", "w"))
+                v = 0.5 + 0.03 * L + D / 3000 + 0.001 * s
+                json.dump({"sets": [{"set": "coco", "group": "ood", "budget": 280, "lm_cos": {"mean": v}}]}, open(d / "eval" / "e1" / "summary.json", "w"))
+    out = tmp_path / "plots"
+    _run("scripts/plot_study.py", "--root", str(tmp_path), "--out", str(out), "--runs", "lit_e2b_it_full280_mse_*", "--label", "L{L} D{D}")
+    for name in ("grid_vs_parameters", "grid_vs_gmacs_280", "grid_e1_ood_b280_lm_cos"):
+        assert (out / f"{name}.png").exists() and (out / f"{name}.csv").exists(), name
+    rows = list(_csv.DictReader(open(out / "grid_vs_parameters.csv")))
+    assert len(rows) == 6 and {r["width"] for r in rows} == {"256", "768"} and all(r["n_seeds"] == "2" for r in rows)
+
+
 def test_consistent_mixup_gives_teacher_and_student_the_same_pixels():
     """Function matching (Beyer et al. 2022): mixed images, and the teacher's patches are built from the very
     pixels the student sees."""

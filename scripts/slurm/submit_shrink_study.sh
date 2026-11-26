@@ -20,7 +20,9 @@
 #   md_scale    fm_md with the relation weights x {1, 10, 100, 1000} (1 seed; choose on held-out data)
 #   mixup       --objective without / with consistent mixup (Beyer et al.)
 #   multiplex   weight sharing (MiniViT): same weights {8 x 1, 16 x 2 none | linear | dwconv}, same depth {8 x 1, 8 x 2, 4 x 1}
-#   depth / width / init / grid   the size axis (+experiment=shrink/base, same flags)
+#   grid        the size axis: every (layers, width) of --depths x --widths (default {2,4,8,12,16} x {256,384,512,768};
+#               16 x 768 is the teacher itself = the identity check), from the teacher, with the current recipe
+#   depth / width   one row / column of it (--student gives the other size); init: teacher vs random init (8 x 384)
 #
 # --teacher gemma4_e2b | gemma4_e4b: the LM-input space distilled into (in every run name); --eval-vlms e2b,e4b also
 # evaluates every student in the other VLM (E3 + general suite, in eval_vlm_<key>/); --only '<glob>' keeps the
@@ -31,7 +33,7 @@ set -euo pipefail
 : "${ONBOARD_VLM_ROOT:?run 'source scripts/paths.sh' first}"
 ACCOUNT="" STUDY="" SEEDS="0,1,2" TIME="24:00:00" EVAL_TIME="24:00:00" DRY="" LIST="" TEACHER_CFG="gemma4_e2b"
 LIT_STUDENT="8 768" LIT_OBJECTIVE="mse" LIT_INPUT="full280" LIT_LR="0.001" MD_SCALE="1.0" LMMS_STEPS="last" EVALS="e1,e2,e3,lmms"
-EVAL_VLMS="" ONLY="*"
+EVAL_VLMS="" ONLY="*" DEPTHS="2 4 8 12 16" WIDTHS="256 384 512 768"
 EXTRA=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,7 +44,9 @@ while [ $# -gt 0 ]; do
     --eval-time) EVAL_TIME="$2"; shift 2 ;;
     --teacher) TEACHER_CFG="$2"; shift 2 ;;          # gemma4_e2b | gemma4_e4b: the LM-input space distilled into
     --eval-vlms) EVAL_VLMS="$2"; shift 2 ;;          # e.g. e2b,e4b: also evaluate every student in these VLMs
-    --only) ONLY="$2"; shift 2 ;;                    # glob over run names
+    --only) ONLY="$2"; shift 2 ;;                    # globs over run names, comma-separated (any matches)
+    --depths) DEPTHS="${2//,/ }"; shift 2 ;;         # grid / depth study: layers (default 2 4 8 12 16)
+    --widths) WIDTHS="${2//,/ }"; shift 2 ;;         # grid / width study: hidden sizes, multiples of 64 (default 256 384 512 768)
     --student) LIT_STUDENT="$2"; shift 2 ;;          # "<layers> <width>" (default 8 768: half the teacher's layers)
     --objective) LIT_OBJECTIVE="$2"; shift 2 ;;      # objective of every study but objective / target (config/objective/)
     --input) LIT_INPUT="$2"; shift 2 ;;              # input recipe of every study but input (config/input/)
@@ -110,13 +114,21 @@ case "$STUDY" in
              "$(lit "$O" 0.0 16 "$SD" 2 dwconv)" "$(lit "$O" 0.0 8 "$SD" 2 linear)" "$(lit "$O" 0.0 4 "$SD" 1 none)")
     PLOTS=("multiplex_same_weights|{L} layers, shared x{k} ({tr})||$(names 0 1 2 3)"
            "multiplex_same_depth|{L} layers, shared x{k} ({tr})||$(names 0 4 5)") ;;
-  depth) CONFIGS=(); for L in 12 8 6 4 2; do CONFIGS+=("$(shrink "$L" 768 teacher uniform uniform)"); done ;;
-  width) CONFIGS=(); for D in 512 384 256 128; do CONFIGS+=("$(shrink 16 "$D" teacher uniform uniform)"); done ;;
+  grid)  # the size grid: every (layers, width) of --depths x --widths, from the teacher, with the current recipe
+    CONFIGS=(); for D in $WIDTHS; do for L in $DEPTHS; do CONFIGS+=("$(lit "$O" 0.0 "$L" "$D" 1 none)"); done; done
+    PLOTS=("grid|L{L} D{D}||$(names $(seq 0 $((${#CONFIGS[@]} - 1))))")
+    i=0; for D in $WIDTHS; do  # one row of the grid per width: training curves, ordered by depth
+      idx=(); for L in $DEPTHS; do idx+=("$i"); i=$((i + 1)); done
+      PLOTS+=("grid_width_$D|{L} layers|L|$(names "${idx[@]}")")
+    done ;;
+  depth) CONFIGS=(); for L in $DEPTHS; do CONFIGS+=("$(lit "$O" 0.0 "$L" "${SD}" 1 none)"); done ;;
+  width) CONFIGS=(); for D in $WIDTHS; do CONFIGS+=("$(lit "$O" 0.0 "$SL" "$D" 1 none)"); done ;;
   init) CONFIGS=("$(shrink 8 384 teacher uniform uniform)" "$(shrink 8 384 teacher first first)" "$(shrink 8 384 random uniform uniform)") ;;
-  grid) CONFIGS=(); for L in 4 8 12; do for D in 256 384 512; do CONFIGS+=("$(shrink "$L" "$D" teacher uniform uniform)"); done; done ;;
   *) echo "--study references | identity | lr | target | input | objective | md_scale | mixup | multiplex | depth | width | init | grid" >&2; exit 2 ;;
 esac
-KEPT=(); for c in "${CONFIGS[@]}"; do [[ "${c%%|*}" == $ONLY ]] && KEPT+=("$c"); done; CONFIGS=("${KEPT[@]}")
+IFS=, read -r -a GLOBS <<< "$ONLY"  # patterns, not expanded against files
+KEPT=(); for c in "${CONFIGS[@]}"; do for g in "${GLOBS[@]}"; do if [[ "${c%%|*}" == $g ]]; then KEPT+=("$c"); break; fi; done; done
+CONFIGS=("${KEPT[@]}")
 if [ -n "$LIST" ]; then [ ${#CONFIGS[@]} -eq 0 ] || printf '%s\n' "${CONFIGS[@]}"; exit 0; fi
 
 declare -A QUEUED

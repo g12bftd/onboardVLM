@@ -32,18 +32,20 @@ at 16 x 768).
 | study | configurations | question |
 |---|---|---|
 | `identity` | 16 x 768, teacher init | is the recipe sound (fidelity stays at 1)? |
-| `depth` | {12, 8, 6, 4, 2} x 768, teacher init | how does fidelity degrade with depth? |
-| `width` | 16 x {512, 384, 256, 128}, teacher init | with width? |
+| `grid` | {2, 4, 8, 12, 16} x {256, 384, 512, 768} (`--depths`, `--widths`), teacher init; 16 x 768 is `identity` | what each size keeps; depth vs width at equal parameters / compute (`grid_vs_parameters`, `grid_vs_gmacs_280`) |
+| `depth` | `--depths` x the width of `--student`, teacher init | one column of the grid |
+| `width` | the depth of `--student` x `--widths`, teacher init | one row of the grid |
 | `init` | 8 x 384: teacher-uniform, teacher-first, random | does inheriting the teacher's weights matter, and how? |
-| `grid` | {4, 8, 12} x {256, 384, 512}, teacher init | depth vs width at equal parameters |
 
-Run names include the teacher whose LM-input space is distilled into (`shrink_e2b_it_L8_D768_teacher_uniform-uniform`;
-`--teacher gemma4_e4b` gives `shrink_e4b_it_...`), so E2B and E4B runs never collide.
+Run names spell out the teacher whose LM-input space is distilled into, the input recipe, the objective, the learning
+rate and the size (`lit_e2b_it_full280_mse_mx0.0_lr0.001_L8_D384_x1-none`; `--teacher gemma4_e4b` gives `lit_e4b_it_...`),
+so no two configurations ever share a run directory, and a cell shared by two studies is trained once.
 
 The same launcher runs the literature studies (`--study lr | target | input | objective | md_scale | mixup | multiplex`: function matching,
 manifold distillation, intermediate layers, weight multiplexing), described in [methods.md](methods.md).
 
-Run `identity` and `depth` first; `grid` (27 runs with 3 seeds) after the first results.
+Run `identity` and the learning-rate check first, then `grid` with one seed per cell (20 runs) and 3 seeds at three
+cells to measure the seed variation ([methods.md](methods.md), step 3).
 
 ## 3. What is measured, and when
 

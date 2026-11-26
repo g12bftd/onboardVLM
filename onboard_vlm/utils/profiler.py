@@ -85,6 +85,22 @@ def _gemma_inputs(hw: tuple[int, int], budget: int, device: torch.device, dtype:
     return pv, pos
 
 
+@torch.no_grad()
+def encoder_gmacs(model: nn.Module, budget: int = 280, source_hw: tuple[int, int] = (1080, 1440)) -> float:
+    """Multiply-accumulates (G) of one student forward on a ``source_hw`` frame at ``budget`` tokens, on the model's
+    own device and dtype (``FlopCounterMode``: matmuls / convolutions; shared weights count every time they run)."""
+    p = next(model.parameters())
+    was = model.training
+    model.eval()
+    try:
+        fc = FlopCounterMode(display=False)
+        with fc:
+            model(*_student_inputs(target_size(*source_hw, budget), p.device, p.dtype))
+        return fc.get_total_flops() / 2e9
+    finally:
+        model.train(was)
+
+
 @torch.inference_mode()
 def profile_encoder(
     model: nn.Module,

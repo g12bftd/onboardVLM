@@ -151,7 +151,8 @@ and `plot_study.py --vlm <key>` reads them.
 ## Building up: from the simplest recipe, one ingredient at a time
 
 The first run is the simplest recipe that answers the question at all. Every later step adds **one** ingredient to
-the recipe the evidence so far supports, at equal data, images seen and compute, with 3 seeds. An ingredient enters
+the recipe the evidence so far supports, at equal data, images seen and compute, with 3 seeds (the size grid: one
+seed per cell plus a seed check, below). An ingredient enters
 the recipe only if it improves held-out fidelity (E1) or the general suite (E3) beyond the seed spread, or fixes a
 weakness the evaluation showed. Otherwise the simpler recipe stays. The run that a study compares against is the
 current recipe itself (the same run name), so it is trained once and shared.
@@ -160,28 +161,49 @@ current recipe itself (the same run name), so it is trained once and shared.
 
 | part | choice | why it is the simplest |
 |---|---|---|
-| student | 8 layers × 768 from the teacher (every other layer kept, nothing else changed) | no width-selection heuristic, no new parameters |
+| student | 8 layers × 768 from the teacher (every other layer kept, nothing else changed); the grid (step 3) covers the other sizes | no width-selection heuristic, no new parameters |
 | input | `input=full280`: each image whole, at Gemma 4's own processor geometry (native aspect ratio) and 280 tokens (Gemma 4's default) | exactly what the VLM sees: no crop, flip, aspect or budget sampling, no mixup |
 | objective | `objective=mse`: one MSE term on the output tokens where the LM reads them | "replicate the teacher's output tokens", nothing else |
 | data | the general corpus (`general_vision_lite`), 5M images seen | fixed for every step |
 | optimisation | AdamW without weight decay (decay would pull the inherited weights towards 0 even at zero loss), 5% warmup, cosine decay, clip 1.0; learning rate chosen in step 2 | no regulariser; the one hyperparameter set before the ladder |
 
+Everything starts with **one teacher, E2B** (its VLM is the cheaper one to evaluate, and the vision tower is the
+same in E4B). The size grid comes first, because it frames every later question: what compression costs with the
+simplest recipe, and at which sizes a better recipe is worth looking for.
+
 | step | `--study` | runs (seeds) | question | what decides it |
 |---|---|---|---|---|
-| 0 | `references` | none: teacher in E2B and E4B (general suite, blind floor, probes, mini-benchmarks) | the ceiling and the floor of every comparison | none |
-| 1 | `identity` | the simplest recipe at 16 × 768 = the teacher (1) | does training keep the teacher exact? A pipeline check | val fidelity stays at 1 |
-| 2 | `lr` | the simplest recipe at lr {1e-4, 3e-4, 1e-3} (1) | a learning rate that neither under-trains nor destroys the inherited weights | val fidelity (val split only) |
-| 3 | `target` | vision / E2B / E4B target, each evaluated in both VLMs (3 × 3) | where to match; can one student serve both VLMs? | E3 in both VLMs |
+| 0 | `references` | none: the teacher in E2B (general suite, blind floor, probes, mini-benchmarks) | the ceiling and the floor of every comparison | none |
+| 1 | `identity` | the simplest recipe at 16 × 768 = the teacher (1) | does training keep the teacher exact? A pipeline check (also the top-right corner of the grid) | val fidelity stays at 1 |
+| 2 | `lr`, at two corners of the grid (`--student "8 768"` and `--student "4 256"`) | lr {1e-4, 3e-4, 1e-3} (3 × 1 each) | a learning rate that neither under-trains nor destroys the inherited weights, and whether it transfers across sizes | val fidelity (val split only) |
+| 3 | `grid` | every (layers, width) of {2, 4, 8, 12, 16} × {256, 384, 512, 768} (20 × 1), then 3 seeds at 3 cells | what does each size keep, and is depth or width the better place to save parameters / compute? | E1, E2, E3 vs parameters and GMACs |
 | 4 | `input` | full280 → full (every budget) → aspect (aspect coverage) → crop (scale augmentation) (4 × 3) | does the input recipe need more than what the VLM sees? | E1 per budget and aspect bin, E3 |
 | 5 | `objective` | mse → fm (+ cosine) → md, fm_md (relations, Hao et al.) → fm_fmL, fm_mdL (+ intermediate layers) (6 × 3; `md_scale` first, 1 seed) | do the literature objectives help? | E1, E3 |
 | 6 | `mixup` | the recipe without / with consistent mixup (Beyer et al.) (2 × 3) | does function matching on mixed images help? | E1, E3 |
 | 7 | `multiplex` | weight sharing, 6 students (6 × 3) | MiniViT: depth for free at fixed parameters? | E3 vs unique parameters |
-| 8 | `depth`, `width`, `grid` | the size axis with the final recipe | how small can the student get? | E3 vs params / latency |
+| 8 | `target` | vision / E2B / E4B target, each evaluated in both VLMs (3 × 3) | can one student serve both VLMs? | E3 in both VLMs |
+| 9 | `grid` again | the final recipe over the grid (or its Pareto front) | how far the recipe moves the front | E3 vs cost |
 
+Steps 4–7 run at one or two sizes the grid singles out (a size on the knee of the Pareto front, and a small one).
 Before each step, set the flags to what the previous steps selected: `--lr`, `--input`, `--objective`,
-`--md-scale` (and `--teacher` / `--eval-vlms` after step 3). If step 3 shows the vision-space target is as good as
-the LM-space ones in both VLMs, steps 4–8 run once with `--objective mseV` (or its later variants) for both VLMs.
-Otherwise they run for E2B first, and the selected recipe is repeated for E4B (`--teacher gemma4_e4b`).
+`--md-scale`, `--student`.
+
+**The grid (step 3).** Every student starts from the teacher: evenly spaced layers, and the same channels, heads and MLP
+units in every layer (weight selection). So the grid separates depth from width at matched recipe, data and compute.
+`plot_study.py` draws it as:
+
+* heatmaps of every metric over layers × width;
+* the metric against unique parameters and against GMACs per 280-token image (`grid_vs_parameters`,
+  `grid_vs_gmacs_280`), one line per width, points labelled with their depth, the Pareto front in grey, the teacher
+  dashed;
+* per-width training curves ordered by depth (`grid_width_<D>`).
+
+Each export records its parameters and GMACs (`student_stats.json`). Parameters include the 2 × 10,240 × width
+position table, which dominates the smallest students.
+
+One seed per cell maps the grid. Three seeds at three cells spread over it measure the seed variation. If that
+variation is small next to the differences between neighbouring cells, the one-seed grid is a faithful picture
+(the paper states it). The cells the conclusions rest on get 3 seeds.
 
 The order of steps 4–6 is a choice: ingredients can interact. The final recipe is therefore also compared against
 the simplest recipe directly, and every ingredient is removed from it once (a leave-one-out check), so a gain
@@ -193,15 +215,17 @@ evaluates that "no training" floor on the general suite (once is enough: it does
 ```bash
 source scripts/paths.sh
 S=scripts/slurm/submit_shrink_study.sh
-bash $S --account <project> --study references --eval-vlms e2b,e4b
+bash $S --account <project> --study references
 bash $S --account <project> --study identity --seeds 0
-bash $S --account <project> --study lr --seeds 0
-bash $S --account <project> --study target --lr <chosen>
-bash $S --account <project> --study input --lr <chosen> [--objective mseV]
-bash $S --account <project> --study md_scale --seeds 0 --lr <chosen> --input <chosen>
-bash $S --account <project> --study objective --lr <chosen> --input <chosen> --md-scale <chosen>
-bash $S --account <project> --study mixup --lr <chosen> --input <chosen> --objective <chosen>
-bash $S --account <project> --study multiplex --lr <chosen> --input <chosen> --objective <chosen>
+bash $S --account <project> --study lr --seeds 0 --student "8 768"
+bash $S --account <project> --study lr --seeds 0 --student "4 256"
+bash $S --account <project> --study grid --seeds 0 --lr <chosen>
+bash $S --account <project> --study grid --seeds 1,2 --lr <chosen> --only '*_L4_D256_*,*_L8_D384_*,*_L12_D768_*'
+bash $S --account <project> --study input --lr <chosen> --student "<L> <D>"
+bash $S --account <project> --study md_scale --seeds 0 --lr <chosen> --input <chosen> --student "<L> <D>"
+bash $S --account <project> --study objective --lr <chosen> --input <chosen> --md-scale <chosen> --student "<L> <D>"
+bash $S --account <project> --study mixup --lr <chosen> --input <chosen> --objective <chosen> --student "<L> <D>"
+bash $S --account <project> --study multiplex --lr <chosen> --input <chosen> --objective <chosen> --student "<L> <D>"
 ```
 
 `--dry-run` prints what would be submitted, and `--list` prints the run names and their overrides. Run names spell

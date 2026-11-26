@@ -23,8 +23,15 @@ def save_student(directory: str, student: nn.Module, config: dict[str, Any]) -> 
     with open(os.path.join(directory, "student_config.json"), "w") as f:
         json.dump(config, f, indent=2)
     unique = sum(p.numel() for p in student.parameters())  # shared weights counted once
+    stats: dict[str, Any] = {"parameters": unique, "parameters_with_repeats": sum(p.numel() for _, p in student.named_parameters(remove_duplicate=False))}
+    try:  # compute per image, for accuracy-vs-cost plots (a 4:3 frame at 280 tokens, Gemma 4's default budget)
+        from onboard_vlm.utils.profiler import encoder_gmacs
+
+        stats["gmacs_280"] = round(encoder_gmacs(student, 280), 4)
+    except Exception as e:  # never fail an export over a statistic
+        stats["gmacs_280_error"] = repr(e)[:200]
     with open(os.path.join(directory, "student_stats.json"), "w") as f:
-        json.dump({"parameters": unique, "parameters_with_repeats": sum(v.numel() for v in state.values() if v.is_floating_point())}, f, indent=1)
+        json.dump(stats, f, indent=1)
 
 
 def load_student(directory: str, map_location: str | torch.device = "cpu", **overrides: Any) -> tuple[nn.Module, dict[str, Any]]:

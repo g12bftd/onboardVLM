@@ -419,6 +419,94 @@ def final_vs_params(path: str, groups, keys, colors, metrics: list[tuple[str, st
     save(fig, path, table)
 
 
+def stat_of(run: Run, key: str) -> float | None:
+    """A field of the last export's student_stats.json (``parameters``, ``gmacs_280``)."""
+    stats = sorted(glob.glob(os.path.join(run.traj, "step_*", "student_stats.json")))
+    if not stats:
+        return None
+    with open(stats[-1]) as f:
+        v = json.load(f).get(key)
+    return float(v) if isinstance(v, (int, float)) else None
+
+
+LOWER_IS_BETTER = ("mse", "rmse", "absrel", "rel_err")
+
+
+def grid_vs_cost(path: str, runs: list[Run], metrics: list[tuple[str, str]], teacher: dict, cost: str = "parameters") -> None:
+    """The size grid as one figure: final value (seed mean +- std) against the student's cost (unique parameters or
+    GMACs per 280-token image, log scale), one line per width (light -> dark = narrow -> wide), each point labelled
+    with its depth, the Pareto front of the grid in grey, the teacher dashed. Needs >= 2 widths and >= 2 depths."""
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.ticker import FuncFormatter
+
+    Ls = sorted({r.fields.get("L") for r in runs if r.fields.get("L") is not None})
+    Ds = sorted({r.fields.get("D") for r in runs if r.fields.get("D") is not None})
+    if len(Ls) < 2 or len(Ds) < 2 or len(Ds) > len(RAMP):
+        return
+    cells: dict[tuple[int, int], list[Run]] = defaultdict(list)
+    for r in runs:
+        cells[(r.fields.get("L"), r.fields.get("D"))].append(r)
+    xof = {c: stat_of(rs[0], cost) for c, rs in cells.items()}
+    if sum(v is not None for v in xof.values()) < 3:
+        return
+    scale, xlabel = (1e6, "student parameters (M, log)") if cost == "parameters" else (1.0, "GMACs per image at 280 tokens (log)")
+    shown = [(k, t) for k, t in metrics if any(final_value(r, k) is not None for r in runs)]
+    if not shown:
+        return
+    colors = dict(zip(Ds, [RAMP[i] for i in np.round(np.linspace(0, len(RAMP) - 1, len(Ds))).astype(int)])) if len(Ds) > 1 else {Ds[0]: RAMP[2]}
+    cols = min(3, len(shown))
+    rows = math.ceil(len(shown) / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(PAPER["width"], PAPER["width"] / cols * 0.8 * rows + 0.5), squeeze=False)
+    table = []
+    for ax, (key, title) in zip(axes.flat, shown):
+        pts = []
+        for D in Ds:
+            line = []
+            for L in Ls:
+                x = xof.get((L, D))
+                vals = [v for r in cells.get((L, D), []) if (v := final_value(r, key)) is not None]
+                if x is None or not vals:
+                    continue
+                m, sd = float(np.mean(vals)), float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+                line.append((x / scale, m, sd, L))
+                table.append({"metric": key, "layers": L, "width": D, cost: x, "seed_mean": m, "seed_std": sd, "n_seeds": len(vals)})
+            if not line:
+                continue
+            xs, ms, sds, lab = zip(*sorted(line))
+            ax.errorbar(xs, ms, yerr=sds, color=colors[D], marker="o", ms=4, lw=1.5, capsize=2, markeredgecolor="white", markeredgewidth=0.6)
+            for x, m, L in zip(xs, ms, lab):
+                ax.annotate(f"{L}", (x, m), textcoords="offset points", xytext=(3, 3), fontsize=PAPER["note"] - 1, color=TEXT2)
+            pts += list(zip(xs, ms))
+        lower = any(t in key for t in LOWER_IS_BETTER)
+        front, best = [], None
+        for x, m in sorted(pts):  # cheapest first: a point is on the front if nothing cheaper is better
+            if best is None or (m < best if lower else m > best):
+                front.append((x, m))
+                best = m
+        if len(front) > 1:
+            fx, fy = zip(*front)
+            ax.step(fx, fy, where="post", color=GRID, lw=3, zorder=0)
+        if teacher.get(key) is not None:
+            ax.axhline(teacher[key], color=TEXT2, lw=1.2, ls="--")
+        ax.set_xscale("log")
+        plain = FuncFormatter(lambda v, _: f"{v:g}")
+        ax.xaxis.set_major_formatter(plain)
+        ax.xaxis.set_minor_formatter(plain)
+        ax.tick_params(axis="x", which="both", labelsize=PAPER["tick"], colors=TEXT2)
+        style(ax, title, xlabel)
+    for ax in list(axes.flat)[len(shown):]:
+        ax.set_visible(False)
+    handles = [Line2D([], [], color=colors[D], lw=2, marker="o", ms=4, label=f"width {D}") for D in Ds]
+    handles.append(Line2D([], [], color=GRID, lw=3, label="Pareto front"))
+    if any(teacher.get(k) is not None for k, _ in shown):
+        handles.append(Line2D([], [], color=TEXT2, lw=1.2, ls="--", label="teacher"))
+    fig.legend(handles=handles, loc="upper center", ncol=len(handles), frameon=False, fontsize=PAPER["legend"], bbox_to_anchor=(0.5, 1.0))
+    fig.text(0.99, 0.005, "point labels: layers", ha="right", fontsize=PAPER["note"], color=TEXT2)
+    fig.tight_layout(rect=(0, 0.02, 1, 0.93))
+    save(fig, path, table)
+
+
 def grid_heatmap(path: str, runs: list[Run], key: str = "val/fid_lm_cos", title: str | None = None) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.colors import LinearSegmentedColormap
@@ -527,6 +615,11 @@ def main() -> None:
             ("e2/imagenet/knn_top1", "ImageNet k-NN top-1"), *E3_PANELS, *LMMS.items()]
     for key, title in heat:  # depth x width grids (only when both vary)
         grid_heatmap(os.path.join(a.out, "grid_" + re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")), runs, key, title)
+    cost_metrics = [(fk, "held-out LM-space cosine (280 tokens)"), ("lmms/overall", "general suite: overall"),
+                    ("val/fid_lm_cos", "val LM-space cosine"), ("e2/imagenet/knn_top1", "ImageNet k-NN top-1"), *E3_PANELS,
+                    *[(k, t) for k, t in LMMS_PANELS if k != "lmms/overall"]][:6]
+    for cost in ("parameters", "gmacs_280"):  # the size grid against its cost (only when depth and width both vary)
+        grid_vs_cost(os.path.join(a.out, f"grid_vs_{cost}"), runs, cost_metrics, teacher, cost)
     fidelity_vs_downstream(os.path.join(a.out, "fidelity_vs_downstream"), runs, fk)
     try:
         colors = series_colors(keys, bool(a.order))
