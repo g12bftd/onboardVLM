@@ -147,8 +147,9 @@ done
 # ---- benchmark LMDBs, blocklist, Ego4D ---------------------------------------------------------------------
 J[extract]=""; skipped egoblind || J[extract]=$(sub bench-extract "$PART" 04:00:00 "${J[dl_egoblind]}" benchmarks_extract)  # EgoBlind zips
 bench_deps=$(join "${J[dl_vizwiz]}" "${J[dl_textvqa]}" "${J[dl_wearvqa]}" "${J[dl_egoschema]}" "${J[dl_cvbench]}" "${J[dl_egotextvqa]}" "${J[extract]}")
-J[lmdb]=$(sub bench-lmdb "$PART" "$TIME" "$bench_deps" benchmarks_lmdb)
-J[blocklist]=$(sub blocklist "$PART" "$TIME" "$(join "${J[lmdb]}" "${J[eval_sets]}")" blocklist)
+# short jobs get short limits (LMDB_TIME, BLOCKLIST_TIME): a 24-hour request waits until a 24-hour window opens
+J[lmdb]=$(sub bench-lmdb "$PART" "${LMDB_TIME:-03:00:00}" "$bench_deps" benchmarks_lmdb)
+J[blocklist]=$(sub blocklist "$PART" "${BLOCKLIST_TIME:-02:00:00}" "$(join "${J[lmdb]}" "${J[eval_sets]}")" blocklist)
 skipped ego4d || J[dl_ego4d]=$(sub dl-ego4d "$DLPART" "$TIME" "${J[blocklist]}" download:ego4d)
 
 # ---- corpus sources (each waits for its download and the blocklist), then finalize -----------------------

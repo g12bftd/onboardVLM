@@ -5,6 +5,10 @@
 # finished benchmarks are skipped, an unfinished one is rebuilt from an empty directory. Benchmarks
 # whose name starts with a word of SKIP_BENCHMARKS (e.g. "egoblind egotextvqa_outdoor") are not built,
 # e.g. while their download is incomplete; build them later by running this script again without them.
+#
+# A benchmark that fails is removed (no half-built LMDB is ever read), listed in $LMDB_ROOT/.failed, and the others
+# are still built. The script fails only if one of REQUIRED_BENCHMARKS failed (default: textvqa cvbench, the
+# per-checkpoint downstream benchmarks); the application-check benchmarks never block the data pipeline.
 set -euo pipefail
 RAW_ROOT="${RAW_ROOT:-./data/raw}"
 LMDB_ROOT="${LMDB_ROOT:-${ONBOARD_VLM_DATA:-./data/lmdb}}"
@@ -12,7 +16,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 L="$HERE/lmdb"
 read -r -a SKIP <<< "${SKIP_BENCHMARKS:-}"
 read -r -a ONLY <<< "${ONLY_BENCHMARKS:-}"   # build only these (prefixes), e.g. "vizwiz" or "egotextvqa_indoor"
-BUILT=() SKIPPED=()
+read -r -a REQUIRED <<< "${REQUIRED_BENCHMARKS:-textvqa cvbench}"
+BUILT=() SKIPPED=() FAILED=()
 
 build() {  # build <name> <command...>
   local name="$1" s o want=""; shift
@@ -26,7 +31,17 @@ build() {  # build <name> <command...>
   if [ -f "$LMDB_ROOT/$name/.done" ]; then echo "[lmdb] $name: already built"; BUILT+=("$name"); return; fi
   echo "[lmdb] $name: building"
   rm -rf "${LMDB_ROOT:?}/$name"   # LMDB writers refuse duplicate keys: always build into an empty directory
-  "$@"
+  local rc
+  set +e
+  ( set -e; "$@" )                # its own shell: one benchmark failing does not stop the others
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    echo "[lmdb] $name: FAILED (exit $rc); its partial output is removed"
+    rm -rf "${LMDB_ROOT:?}/$name"
+    FAILED+=("$name")
+    return
+  fi
   touch "$LMDB_ROOT/$name/.done"
   BUILT+=("$name")
 }
@@ -59,4 +74,12 @@ build egotextvqa_indoor indoor
 build egoschema python "$L/make_egoschema.py" --input_path "$RAW_ROOT/egoschema" --video_dir "$RAW_ROOT/egoschema/videos" \
   --output_path "$LMDB_ROOT/egoschema" --num_frames 32 --max_side 1280
 
-echo "[lmdb] built: ${BUILT[*]:-none} | skipped: ${SKIPPED[*]:-none}"
+echo "[lmdb] built: ${BUILT[*]:-none} | skipped: ${SKIPPED[*]:-none} | failed: ${FAILED[*]:-none}"
+mkdir -p "$LMDB_ROOT"
+printf '%s\n' "${FAILED[@]}" | sed '/^$/d' > "$LMDB_ROOT/.failed"   # read by prepare_all.sh: the step stays unfinished
+for b in "${FAILED[@]}"; do
+  for r in "${REQUIRED[@]}"; do
+    [ "$b" = "$r" ] && { echo "[lmdb] required benchmark $b failed (see above)" >&2; exit 1; }
+  done
+done
+[ ${#FAILED[@]} -eq 0 ] || echo "[lmdb] WARNING: ${FAILED[*]} failed (application checks only): the rest of the pipeline goes on; re-run to retry them"

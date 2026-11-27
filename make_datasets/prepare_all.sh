@@ -112,9 +112,10 @@ step_benchmarks_extract() {
     --ids "$RAW_ROOT/egoblind/test.csv" "$RAW_ROOT/egoblind/train.csv" --required "$RAW_ROOT/egoblind/test.csv" --max_missing 0.01
 }
 
+lmdb_failed() { [ -s "${LMDB_ROOT:-${ONBOARD_VLM_DATA:-./data/lmdb}}/.failed" ]; }   # benchmarks whose LMDB build failed last time (build_all_lmdb.sh)
 step_benchmarks_lmdb() {  # each benchmark on its own (build_all_lmdb.sh); SKIP_BENCHMARKS leaves some out
   bash "$HERE/build_all_lmdb.sh"
-  [ -z "${SKIP_BENCHMARKS:-}" ] || INCOMPLETE=1   # re-run later, without the skips, to add them
+  if [ -n "${SKIP_BENCHMARKS:-}" ] || lmdb_failed; then INCOMPLETE=1; fi   # re-run later to add / retry them
 }
 
 step_eval_sets() { python -u "$HERE/eval_sets/build_eval_sets.py" --raw_root "$RAW_ROOT/eval_sets" --eval_root "$EVAL_ROOT" --workers "${EVAL_WORKERS:-8}"; }
@@ -130,13 +131,13 @@ step_corpus_download() { local c; for c in "${CORPUS_IMAGE_SOURCES[@]}"; do log 
 
 step_blocklist() {  # from the benchmarks built so far; rebuilt automatically when more are built
   bash "$HERE/build_corpus.sh" blocklist
-  [ -z "${SKIP_BENCHMARKS:-}" ] || INCOMPLETE=1
+  if [ -n "${SKIP_BENCHMARKS:-}" ] || lmdb_failed; then INCOMPLETE=1; fi
 }
 step_ego4d_download() { download ego4d; }
 step_corpus_build() { bash "$HERE/build_corpus.sh" text_rich openimages sa1b "$OBJECTS_SOURCE" cc12m ego4d epic_kitchens; }
 step_corpus_finalize() {  # ALLOW_MISSING=1: a preliminary corpus without the sources not built yet
   bash "$HERE/build_corpus.sh" finalize
-  [ -z "${ALLOW_MISSING:-}${SKIP_BENCHMARKS:-}" ] || INCOMPLETE=1   # partial: finalize again once complete
+  if [ -n "${ALLOW_MISSING:-}${SKIP_BENCHMARKS:-}" ] || lmdb_failed; then INCOMPLETE=1; fi   # partial: finalize again once complete
 }
 step_check() { python "$REPO/scripts/check_data.py"; }
 

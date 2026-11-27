@@ -172,3 +172,42 @@ def test_cvbench_and_wearvqa_builders(tmp_path):
     run_builder("make_wearvqa.py", "--input_path", str(tmp_path / "wv" / "ann.jsonl"), "--output_path", str(tmp_path / "out_wv"))
     s = LMDBVQADataset(str(tmp_path / "out_wv"), "test")[0]
     assert s["sample_id"] == "wearvqa_7" and s["meta"]["quality_issues"] == ["blur", "low light"]
+
+
+def test_wearvqa_builder_reads_the_release_tar(tmp_path):
+    """The WearVQA release is one WebDataset tar (<k>.jpg + <k>.json, reference answer in `response`, six yes/no
+    quality flags); it is a test set even though `datasets` would call the tar a "train" split."""
+    import tarfile
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    members = tmp_path / "m"
+    members.mkdir()
+    for k, (idx, blur, zoom) in enumerate([(10, "no", "yes"), (14, "yes", "no")]):
+        _img(str(members / f"{k}.jpg"))
+        json.dump({"idx": idx, "pix_image_file_name": f"pix_{k}.jpg", "question": f"q{k}?", "response": f"a{k}.",
+                   "domain": "text or documents", "question_type": "text_general_reasoning", "is_not_zoomed_in": zoom,
+                   "is_leveling": "no", "is_cut_off": "no", "is_blur": blur, "is_low_light": "no", "is_occluded": "no",
+                   "hand_finger_elements": None}, open(members / f"{k}.json", "w"))
+    with tarfile.open(raw / "wearvqa.tar", "w") as tf:
+        for name in ("0.jpg", "0.json", "1.jpg", "1.json"):
+            tf.add(members / name, arcname=name)
+    run_builder("make_wearvqa.py", "--input_path", str(raw), "--output_path", str(tmp_path / "out"))
+    ds = LMDBVQADataset(str(tmp_path / "out"), "test")
+    got = {ds[i]["sample_id"]: ds[i] for i in range(len(ds))}
+    assert set(got) == {"wearvqa_10", "wearvqa_14"}
+    assert got["wearvqa_10"]["answers"] == ["a0."] and got["wearvqa_10"]["meta"]["quality_issues"] == ["unmagnified"]
+    assert got["wearvqa_14"]["meta"]["quality_issues"] == ["blur"] and got["wearvqa_14"]["category"] == "text_general_reasoning"
+
+
+def test_lmdb_step_goes_on_when_an_application_benchmark_fails(tmp_path):
+    """A failing application-check benchmark is removed and recorded, and the step succeeds; a failing required
+    benchmark (per-checkpoint E3) fails the step."""
+    env = {**os.environ, "PYTHONPATH": ROOT, "RAW_ROOT": str(tmp_path / "raw"), "LMDB_ROOT": str(tmp_path / "lmdb")}
+    (tmp_path / "raw").mkdir()
+    sh = os.path.join(ROOT, "make_datasets", "build_all_lmdb.sh")
+    r = subprocess.run(["bash", sh], capture_output=True, text=True, env={**env, "ONLY_BENCHMARKS": "vizwiz wearvqa"})
+    assert r.returncode == 0 and "failed: vizwiz wearvqa" in r.stdout, r.stdout[-2000:] + r.stderr[-2000:]
+    assert (tmp_path / "lmdb" / ".failed").read_text().split() == ["vizwiz", "wearvqa"] and not (tmp_path / "lmdb" / "vizwiz").exists()
+    r = subprocess.run(["bash", sh], capture_output=True, text=True, env={**env, "ONLY_BENCHMARKS": "cvbench"})
+    assert r.returncode != 0 and "required benchmark cvbench failed" in r.stderr
