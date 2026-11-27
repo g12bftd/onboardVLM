@@ -52,13 +52,10 @@ class Registry:
 
 
 def _to_plain_dict(cfg: Mapping[str, Any]) -> dict[str, Any]:
-    try:
-        from omegaconf import DictConfig, OmegaConf
+    if type(cfg).__module__.startswith("omegaconf"):  # a DictConfig: omegaconf is importable, it made the object
+        from omegaconf import OmegaConf
 
-        if isinstance(cfg, DictConfig):
-            return OmegaConf.to_container(cfg, resolve=True)  # type: ignore[return-value]
-    except ImportError:  # pragma: no cover
-        pass
+        return OmegaConf.to_container(cfg, resolve=True)  # type: ignore[return-value]
     return dict(cfg)
 
 

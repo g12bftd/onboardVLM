@@ -551,3 +551,21 @@ def test_conda_envs_are_found_by_name_wherever_they_live(tmp_path, monkeypatch):
     assert conda_env_python("onboardvlm-lmms") == str(py)
     assert conda_env_python("other") is None
     assert subprocess.run(["bash", "-n", os.path.join(ROOT, "scripts", "setup_envs.sh")]).returncode == 0
+
+
+def test_package_imports_and_loads_students_without_a_working_omegaconf(tmp_path):
+    """The lmms-eval env has an antlr4 that omegaconf 2.3 cannot load (lmms-eval 0.7.4 needs antlr4 4.13): importing
+    onboard_vlm and building a student from a plain config must not need omegaconf."""
+    fake = tmp_path / "omegaconf"
+    fake.mkdir()
+    (fake / "__init__.py").write_text('raise Exception("Could not deserialize ATN with version 3 (expected 4).")\n')
+    code = ("import onboard_vlm, torch\n"
+            "from onboard_vlm.registry import build_student\n"
+            "from onboard_vlm.geometry import pad_dense\n"
+            "s = build_student({'name': 'gemma4_shrink', 'num_hidden_layers': 2, 'hidden_size': 48, 'out_dim': 48, 'init': 'teacher',\n"
+            "                   'tiny': {'vision_hidden': 48, 'vision_layers': 3}, 'model_id': 'google/gemma-4-E2B-it'})\n"
+            "x, m, _ = pad_dense([torch.rand(3, 288, 384)])\n"
+            "print('tokens', tuple(s(x, m).tokens.shape))\n")
+    env = {**os.environ, "PYTHONPATH": str(tmp_path) + os.pathsep + ROOT}
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, cwd=tmp_path)
+    assert r.returncode == 0 and "tokens (48, 48)" in r.stdout, r.stderr[-2000:]

@@ -4,8 +4,14 @@ __version__ = "0.1.0"
 
 
 def _register_resolvers() -> None:
-    """OmegaConf resolvers used by the configs (registered when the package is imported)."""
-    from omegaconf import OmegaConf
+    """OmegaConf resolvers used by the configs (registered when the package is imported).
+
+    Skipped when omegaconf cannot be imported: the lmms-eval environment only loads exported students (no Hydra
+    configs), and lmms-eval 0.7.4 installs an antlr4 runtime that omegaconf 2.3 cannot load."""
+    try:
+        from omegaconf import OmegaConf
+    except Exception:  # noqa: BLE001  (ImportError, or antlr4's version check raising a bare Exception)
+        return
 
     def seed_tag(seed, init_seed, data_seed) -> str:
         """``s0`` when every source of randomness uses ``seed``, else ``s0_i<init>_d<data>`` (run ids never collide)."""

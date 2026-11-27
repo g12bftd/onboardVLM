@@ -72,7 +72,9 @@ project has it), registered with conda, so they are still found by name (`conda 
 batch job). `scripts/setup_envs.sh` does it reproducibly. It locks the exact package versions of an existing env into
 `env/lock/` (commit those files: they define the environment), registers the directory (`envs_dirs` in
 `~/.condarc`), and rebuilds `onboardvlm` plus `onboardvlm-lmms` there. `onboardvlm-lmms` is the same env plus
-lmms-eval 0.7.4, with torch / torchvision / transformers held at the locked versions. Conda environments cannot be
+lmms-eval 0.7.4 and its `audio` extra (its Gemma 4 model imports librosa), with torch / torchvision / transformers /
+numpy held at the locked versions. pip then warns that omegaconf / hydra-core want antlr4 4.9: expected, lmms-eval
+needs antlr4 4.13 and that env only loads exported students, never Hydra configs. Conda environments cannot be
 moved with `mv`: absolute paths are written into their scripts.
 
 ```bash

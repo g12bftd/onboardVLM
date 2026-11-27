@@ -10,8 +10,9 @@
 #   1. lock   --from: write the exact package list of an existing env to env/lock/ in this repository
 #             (conda explicit spec + pip versions; small text files: commit them, they define the environment)
 #   2. config prepend --envs-dir to conda's envs_dirs (~/.condarc): environments are found there first, by name
-#   3. create onboardvlm from the lock (+ this repository, editable), then onboardvlm-lmms = the same + lmms-eval,
-#             with torch / torchvision / transformers held at the locked versions
+#   3. create onboardvlm from the lock (+ this repository, editable), then onboardvlm-lmms = the same + lmms-eval
+#             (with its audio extra: its Gemma 4 model imports librosa), torch / torchvision / transformers / numpy
+#             held at the locked versions; an existing lmms env whose bridge import fails is repaired in place
 #   4. check  both envs import what they need, with identical torch / transformers, and resolve to --envs-dir
 #
 # Scratch deletes files not accessed for 30 days (docs.cscs.ch/storage/filesystems): if an environment breaks after a
@@ -71,11 +72,12 @@ create() {  # create <name>: conda packages from the explicit spec, pip packages
 for name in $ONLY; do
   case "$name" in onboardvlm|onboardvlm-lmms) ;; *) echo "unknown environment $name" >&2; exit 2 ;; esac
   if ready "$name"; then echo "[setup_envs] $name exists at $ENVS_DIR/$name"; else create "$name"; fi
-  if [ "$name" = onboardvlm-lmms ] && ! "$ENVS_DIR/$name/bin/python" -c 'import lmms_eval' 2>/dev/null; then
+  # lmms-eval's Gemma 4 model imports librosa (its `audio` extra); the bridge import is the real test
+  if [ "$name" = onboardvlm-lmms ] && ! "$ENVS_DIR/$name/bin/python" -c 'import lmms_eval, onboard_vlm.eval.lmms_eval_model' 2>/dev/null; then
     pins="$(mktemp)"
-    grep -iE '^(torch|torchvision|transformers)==' "$PIP_LOCK" > "$pins" || true
-    echo "[setup_envs] lmms-eval==$LMMS_VERSION into $name, holding: $(tr '\n' ' ' < "$pins")"
-    "$ENVS_DIR/$name/bin/python" -m pip install "${PIP_INDEX[@]}" "lmms-eval==$LMMS_VERSION" -c "$pins"
+    grep -iE '^(torch|torchvision|transformers|numpy)==' "$PIP_LOCK" > "$pins" || true
+    echo "[setup_envs] lmms-eval[audio]==$LMMS_VERSION into $name, holding: $(tr '\n' ' ' < "$pins")"
+    "$ENVS_DIR/$name/bin/python" -m pip install "${PIP_INDEX[@]}" "lmms-eval[audio]==$LMMS_VERSION" -c "$pins"
     rm -f "$pins"
   fi
 done
@@ -83,17 +85,31 @@ done
 # ---- 4. check -----------------------------------------------------------------------------------------------------
 echo "[setup_envs] check"
 fail=0
-versions() { "$CONDA" run -n "$1" python -c "import sys, torch, transformers, onboard_vlm; print(sys.prefix, torch.__version__, transformers.__version__)" | tail -1; }
+declare -A V
+versions() { "$CONDA" run -n "$1" python -c "import sys, torch, transformers, onboard_vlm; print(sys.prefix, torch.__version__, transformers.__version__)" 2>&1 | tail -1; }
 for name in $ONLY; do
-  v="$(versions "$name" || true)"
-  echo "  $name: ${v:-BROKEN}"
-  case "$v" in "$ENVS_DIR/$name "*) ;; *) echo "  !! $name does not resolve to $ENVS_DIR/$name (another env of that name comes first?)"; fail=1 ;; esac
+  if v="$(versions "$name")" && [[ "$v" == /* ]]; then
+    V[$name]="${v#* }"
+    echo "  $name: $v"
+    [[ "$v" == "$ENVS_DIR/$name "* ]] || { echo "  !! $name resolves to ${v%% *}, not $ENVS_DIR/$name (an env of that name comes first in envs_dirs)"; fail=1; }
+  else
+    echo "  !! $name: cannot import torch / transformers / onboard_vlm: $v"; fail=1
+  fi
 done
-if [[ " $ONLY " == *" onboardvlm-lmms "* ]]; then
-  "$CONDA" run -n onboardvlm-lmms python -c "import lmms_eval" || { echo "  !! onboardvlm-lmms cannot import lmms_eval"; fail=1; }
-  if [[ " $ONLY " == *" onboardvlm "* ]] && [ "$(versions onboardvlm | cut -d' ' -f2-)" != "$(versions onboardvlm-lmms | cut -d' ' -f2-)" ]; then
-    echo "  !! torch / transformers differ between the two envs: the general suite would not run the trained model as trained"; fail=1
+if [[ " $ONLY " == *" onboardvlm-lmms "* ]] && [ -n "${V[onboardvlm-lmms]:-}" ]; then
+  # the import the general suite makes: lmms-eval's Gemma 4 model subclassed by our bridge
+  if out="$("$CONDA" run -n onboardvlm-lmms python -c "import lmms_eval, onboard_vlm.eval.lmms_eval_model" 2>&1)"; then
+    echo "  onboardvlm-lmms: lmms-eval bridge imports"
+  else
+    echo "  !! onboardvlm-lmms cannot import the lmms-eval bridge: $(echo "$out" | tail -1)"; fail=1
+  fi
+  if [ -n "${V[onboardvlm]:-}" ] && [ "${V[onboardvlm]}" != "${V[onboardvlm-lmms]}" ]; then
+    echo "  !! torch / transformers differ (${V[onboardvlm]} vs ${V[onboardvlm-lmms]}): the general suite would not run the model as trained"; fail=1
   fi
 fi
-[ "$fail" -eq 0 ] && echo "[setup_envs] OK. Once you are happy, remove the old environments (e.g. conda env remove -p <old prefix>) and commit $LOCK_DIR."
+if [ "$fail" -eq 0 ]; then
+  echo "[setup_envs] OK. Once you are happy, remove the old environments (e.g. conda env remove -p <old prefix>) and commit $LOCK_DIR."
+  [[ " $ONLY " != *" onboardvlm-lmms "* ]] || echo "  (pip's warning that omegaconf / hydra-core need antlr4 4.9 in onboardvlm-lmms is expected: lmms-eval needs" \
+    "antlr4 4.13, and that env never loads Hydra configs)"
+fi
 exit "$fail"
