@@ -23,6 +23,16 @@ echo "== ovlm-* jobs, latest attempt each (last $DAYS day(s))"
 printf '%-10s %-28s %-24s %-6s %-10s %s\n' JOBID NAME STATE EXIT ELAPSED NODE
 echo "$jobs" | awk -F'|' '{printf "%-10s %-28s %-24s %-6s %-10s %s\n", $1, $2, $3, $4, $5, $6}'
 echo
+echo "== queued or running now (squeue; jobs waiting on another job are only listed here, not by sacct)"
+q=$(squeue -u "$ME" -h -o '%i|%j|%T|%M|%R' 2>/dev/null | awk -F'|' '$2 ~ /^ovlm-/' | sort -t'|' -k1,1n || true)
+if [ -n "$q" ]; then
+  printf '%-10s %-28s %-10s %-10s %s\n' JOBID NAME STATE TIME "REASON / NODE"
+  echo "$q" | awk -F'|' '{printf "%-10s %-28s %-10s %-10s %s\n", $1, $2, $3, $4, $5}'
+else
+  echo "none"
+fi
+SKIPPED=" $(cat "${DATA_ROOT:-$ONBOARD_VLM_ROOT/data}/.pipeline_skip" 2>/dev/null || true) "   # --skip of the last submission
+echo
 echo "== finished steps ($STEPS_DIR)"
 ls "$STEPS_DIR" 2>/dev/null | sed 's/\.ok$//' | tr '\n' ' '; echo
 
@@ -30,6 +40,10 @@ echo "$jobs" | while IFS='|' read -r id name state code elapsed node; do
   case "$state" in COMPLETED*|RUNNING*|PENDING*|REQUEUED*|CONFIGURING*|COMPLETING*) continue ;; esac
   log="$SLURM_LOG_DIR/$name-$id.out"
   [ -f "$log" ] || continue                                   # never started (e.g. cancelled: dependency failed)
+  src="${name#ovlm-}"; src="${src#dl-}"; src="${src#corpus-}"
+  if [[ "$SKIPPED" == *" $src "* ]]; then
+    echo; echo "== $name (job $id, $state): skipped by the last submission (--skip $src); not needed now"; continue
+  fi
   echo
   echo "== $name (job $id, $state, exit $code, ran $elapsed): last $LINES lines of $log"
   tail -n "$LINES" "$log"

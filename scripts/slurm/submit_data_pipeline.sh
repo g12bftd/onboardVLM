@@ -169,4 +169,5 @@ if [ -n "$SKIP" ]; then
   echo "      The corpus is PRELIMINARY; re-run this script without --skip to complete it (no source is rebuilt)." >&2
 fi
 
+[ -n "$DRY" ] || { s="${SKIP#,}"; s="${s%,}"; echo "${s//,/ }" > "${DATA_ROOT:-$ONBOARD_VLM_ROOT/data}/.pipeline_skip"; }   # pipeline_status.sh
 echo "logs: $SLURM_LOG_DIR | watch: squeue -u $ME -o '%.10i %.28j %.8T %.10M %R' | status: python scripts/check_data.py" >&2
