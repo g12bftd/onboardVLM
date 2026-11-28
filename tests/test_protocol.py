@@ -569,3 +569,38 @@ def test_package_imports_and_loads_students_without_a_working_omegaconf(tmp_path
     env = {**os.environ, "PYTHONPATH": str(tmp_path) + os.pathsep + ROOT}
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, cwd=tmp_path)
     assert r.returncode == 0 and "tokens (48, 48)" in r.stdout, r.stderr[-2000:]
+
+
+def test_inspect_corpus_audits_a_built_source(tmp_path):
+    """The corpus audit reads builder statistics, index geometry and random stored images: a clean source passes, a
+    shard whose index no longer matches its images fails, and an empty corpus fails rather than passing silently."""
+    import glob as _glob
+
+    from PIL import Image
+
+    rng = np.random.default_rng(0)
+    img = tmp_path / "img"
+    img.mkdir()
+    for i in range(24):
+        h, w = int(rng.integers(300, 800)), int(rng.integers(300, 1200))
+        Image.fromarray(rng.integers(0, 255, (6, 8, 3), dtype=np.uint8)).resize((w, h), Image.NEAREST).save(img / f"r{i}.jpg", quality=92)
+    Image.new("RGB", (100, 100), (5, 5, 5)).save(img / "small.jpg")
+    out = tmp_path / "corpus" / "sa1b"
+    _run("make_datasets/corpus/make_image_corpus.py", "--source", "folder", "--input_path", str(img), "--name", "sa1b",
+         "--output_path", str(out), "--worker_id", "0", "--num_workers", "1")
+    (out / ".done").touch()
+    script = os.path.join(ROOT, "scripts", "inspect_corpus.py")
+    r = subprocess.run([sys.executable, script, "--corpus_root", str(tmp_path / "corpus"), "--out", str(tmp_path / "a"), "--samples", "24"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and "all checks passed" in r.stdout and "integrity 24/24" in r.stdout, r.stdout + r.stderr
+    assert (tmp_path / "a" / "sheets" / "sa1b.jpg").exists() and "| sa1b | yes | 25 |" in (tmp_path / "a" / "report.md").read_text()
+    f = sorted(_glob.glob(str(out / "shard_*.index.npz")))[0]
+    d = dict(np.load(f))
+    d["sizes"], d["dhash"] = d["sizes"][::-1].copy(), d["dhash"][::-1].copy()
+    np.savez(f, **d)
+    r = subprocess.run([sys.executable, script, "--corpus_root", str(tmp_path / "corpus"), "--out", str(tmp_path / "b"), "--samples", "24"],
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and "fail integrity" in r.stdout
+    (tmp_path / "empty").mkdir()
+    r = subprocess.run([sys.executable, script, "--corpus_root", str(tmp_path / "empty"), "--out", str(tmp_path / "c")], capture_output=True, text=True)
+    assert r.returncode == 1 and "nothing was checked" in r.stdout
