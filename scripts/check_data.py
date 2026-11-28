@@ -31,6 +31,17 @@ def ok(flag: bool, what: str, detail: str = "", optional: bool = False) -> None:
         missing.append(what)
 
 
+def step_done(d: str, root: str) -> bool:
+    """A source is built when the build step that wrote it finished: ``.done`` in its directory or in an enclosing one
+    up to the corpus root (``text_rich/.done`` covers ``text_rich/pixmo_docs`` and ``text_rich/cauldron/<subset>``)."""
+    root, d = os.path.abspath(root), os.path.abspath(d)
+    while d.startswith(root) and d != root:
+        if os.path.isfile(os.path.join(d, ".done")):
+            return True
+        d = os.path.dirname(d)
+    return False
+
+
 def corpus_count(d: str) -> int:
     return sum(len(np.load(p)["sizes"]) for p in glob.glob(os.path.join(d, "shard_*.index.npz")))
 
@@ -84,7 +95,7 @@ def main() -> None:
     for src in spec:
         dirs = sorted(d for d in glob.glob(os.path.join(corpus, src["dir"])) if os.path.isdir(d))
         n = sum(corpus_count(d) for d in dirs)
-        done = bool(dirs) and all(os.path.isfile(os.path.join(d, ".done")) or os.path.isfile(os.path.join(os.path.dirname(d), ".done")) for d in dirs)
+        done = bool(dirs) and all(step_done(d, corpus) for d in dirs)
         finalized = bool(dirs) and all(os.path.isfile(os.path.join(d, "keep.npz")) for d in dirs)
         ok(done and finalized, src["dir"], f"{n:,} images | built {done} | finalized {finalized}" + ("  (optional)" if src.get("optional") else ""),
            optional=bool(src.get("optional")))
